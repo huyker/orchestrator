@@ -11,6 +11,7 @@ def main() -> None:
     sub.add_parser("serve")
     sub.add_parser("once")
     sub.add_parser("projects")
+    sub.add_parser("bootstrap-labels")
     args = parser.parse_args()
 
     settings = Settings.from_env()
@@ -19,6 +20,9 @@ def main() -> None:
         orch.serve()
     elif args.command == "once":
         orch.tick()
+    elif args.command == "bootstrap-labels":
+        orch.bootstrap_labels()
+        print("orchestrator labels ready")
     else:
         for p in orch.registry.list():
             print(f"{p['id']}: {p['repo']} ({p.get('default_branch', 'main')})")
