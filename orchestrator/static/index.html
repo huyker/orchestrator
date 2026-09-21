@@ -1,161 +1,159 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Orchestrator Control Center</title>
-  <style>
-    :root { font-family: Inter, ui-sans-serif, system-ui, sans-serif; color-scheme: dark; }
-    body { margin:0; background:#0d1117; color:#e6edf3; }
-    header { padding:18px 24px; border-bottom:1px solid #30363d; display:flex; align-items:center; justify-content:space-between; gap:16px; }
-    h1 { margin:0; font-size:20px; } h2 { margin:0 0 12px; font-size:15px; }
-    .muted { color:#8b949e; } .small { font-size:12px; }
-    main { max-width:1500px; margin:0 auto; padding:20px; }
-    .toolbar { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:18px; align-items:center; }
-    button,select,input { background:#21262d; border:1px solid #30363d; color:#e6edf3; padding:8px 12px; border-radius:7px; }
-    input { min-width:320px; }
-    button { cursor:pointer; } button:hover { background:#30363d; }
-    .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(340px,1fr)); gap:14px; }
-    .card { background:#161b22; border:1px solid #30363d; border-radius:10px; padding:14px; min-width:0; }
-    .wide { grid-column:1/-1; }
-    .badge { display:inline-block; padding:3px 7px; border-radius:999px; background:#21262d; border:1px solid #30363d; font-size:12px; margin:2px 3px 2px 0; }
-    pre { white-space:pre-wrap; word-break:break-word; font-size:12px; max-height:420px; overflow:auto; background:#0d1117; padding:10px; border-radius:8px; }
-    table { width:100%; border-collapse:collapse; font-size:13px; }
-    th,td { text-align:left; border-bottom:1px solid #21262d; padding:7px 5px; vertical-align:top; }
-    a { color:#58a6ff; text-decoration:none; }
-    .ok { color:#3fb950; } .bad { color:#f85149; } .warn { color:#d29922; }
-    #toast { min-height:20px; margin-bottom:8px; }
-  </style>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Orchestrator Local Control Plane</title>
+  <link rel="stylesheet" href="/web/style.css">
 </head>
 <body>
-<header>
-  <div><h1>Orchestrator Control Center</h1><div class="muted">Auto-sync projects · local agents · GitHub Issues · PR review</div></div>
-  <div id="runtime" class="badge">loading…</div>
-</header>
-<main>
-  <div class="toolbar">
-    <button onclick="act('resume')">Start / Resume</button>
-    <button onclick="act('pause')">Pause</button>
-    <button onclick="act('retry')">Retry active task via Issue</button>
-    <button onclick="refresh()">Refresh</button>
-    <span id="syncState" class="badge">auto sync: waiting</span>
-    <span class="muted">Project:</span>
-    <select id="projectSelect" onchange="renderSelectedProject()"></select>
+  <div class="app-container">
+    <header class="top-nav">
+      <div class="logo-area">
+        <div class="arcane-gem"></div>
+        <div>
+          <h1 class="logo-title">ORCHESTRATOR LOCAL CONTROL PLANE</h1>
+          <p class="logo-subtitle">Autonomous Multi-Project Agent Orchestrator · GitHub Issue Runtime · Graphify Context</p>
+        </div>
+      </div>
+      <div class="header-badges">
+        <div class="badge" id="githubBadge">GitHub: CHECKING</div>
+        <div class="badge hot-reload-badge">🔥 Auto Sync: <span id="syncBadge">WAITING</span></div>
+        <div class="badge branch-badge">Projects: <span id="projectCount">0</span></div>
+        <div class="badge status-badge">Mode: <span id="modeBadge">STARTING</span></div>
+      </div>
+    </header>
+
+    <section class="action-bar card">
+      <div class="controls-left">
+        <button class="btn btn-primary btn-glow" id="btnResume"><span class="pulse-indicator"></span> ⚡ Start / Resume</button>
+        <button class="btn btn-secondary" id="btnPause">⏸ Pause</button>
+        <button class="btn btn-purple" id="btnRetry">↻ Retry Active Task</button>
+        <button class="btn btn-info" id="btnAddProject">＋ Add Project</button>
+      </div>
+      <div class="controls-right">
+        <span class="sync-indicator" id="lastSyncLabel">Last sync: never</span>
+        <button class="btn-sm" id="btnRefresh">Refresh</button>
+      </div>
+    </section>
+
+    <div id="blockerBanner" class="blocker-banner hidden"><span>⚠️ </span><span id="blockerText"></span></div>
+
+    <section id="githubSetup" class="card hidden">
+      <div class="panel-header"><h2>GITHUB CONNECTION</h2><span class="count-pill">Issue / PR API</span></div>
+      <div class="github-setup-row">
+        <div>
+          <div class="warn"><strong>GitHub API is not connected.</strong> Dashboard and Git sync stay online; Issue processing remains disabled.</div>
+          <div class="form-help">The app first tries GITHUB_TOKEN, GH_TOKEN and <code>gh auth token</code>. Paste a token only if none are available.</div>
+        </div>
+        <div class="github-token-box">
+          <input id="githubToken" class="form-input" type="password" autocomplete="off" placeholder="GitHub token">
+          <button class="btn btn-primary" id="btnConnectGithub">Connect</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="metrics-grid">
+      <div class="metric-card card">
+        <div class="metric-label">Current Active Task</div>
+        <div class="metric-value highlight-cyan" id="currentTaskTitle">None (Idle)</div>
+        <div class="metric-sub" id="currentTaskSub">Waiting for managed-project Issues</div>
+      </div>
+      <div class="metric-card card">
+        <div class="metric-label">Ready Tasks</div>
+        <div class="metric-value highlight-green" id="readyCount">0</div>
+        <div class="metric-sub">Issues labelled orch:ready</div>
+      </div>
+      <div class="metric-card card">
+        <div class="metric-label">In Progress / QA</div>
+        <div class="metric-value highlight-gold" id="inProgressCount">0</div>
+        <div class="metric-sub">Implement · Validate · Internal Review</div>
+      </div>
+      <div class="metric-card card">
+        <div class="metric-label">GPT Review</div>
+        <div class="metric-value highlight-purple" id="reviewCount">0</div>
+        <div class="metric-sub">Waiting external review / merge</div>
+      </div>
+      <div class="metric-card card">
+        <div class="metric-label">Blocked</div>
+        <div class="metric-value highlight-red" id="blockedCount">0</div>
+        <div class="metric-sub">Requires retry / user / runtime fix</div>
+      </div>
+    </section>
+
+    <section class="card lifecycle-overview-card">
+      <div class="panel-header">
+        <h2>GLOBAL TASK LIFECYCLE</h2>
+        <span class="count-pill" id="openTaskCount">0 open tasks</span>
+      </div>
+      <div id="lifecycleOverview" class="lifecycle-overview"></div>
+    </section>
+
+    <section class="live-telemetry card">
+      <div class="telemetry-header">
+        <div class="telemetry-title-group">
+          <div class="status-indicator-dot" id="liveDot"></div>
+          <h2>LIVE AGENT EXECUTION & PROCESS TELEMETRY</h2>
+        </div>
+        <div class="telemetry-badges">
+          <span class="telemetry-pill" id="liveLifecycleBadge">STATE: IDLE</span>
+          <span class="telemetry-pill" id="liveProjectBadge">PROJECT: NONE</span>
+          <span class="telemetry-pill" id="liveIssueBadge">ISSUE: NONE</span>
+          <span class="telemetry-pill" id="liveReviewBadge">REVIEW: 0</span>
+        </div>
+      </div>
+      <div class="telemetry-meta-row">
+        <div class="meta-item"><span class="meta-label">Task:</span><span class="meta-val" id="liveTaskVal">None</span></div>
+        <div class="meta-item"><span class="meta-label">Branch:</span><span class="meta-val font-mono" id="liveBranchVal">None</span></div>
+        <div class="meta-item"><span class="meta-label">PR:</span><span class="meta-val" id="livePrVal">None</span></div>
+        <div class="meta-item"><span class="meta-label">Auto Sync:</span><span class="meta-val font-mono" id="liveSyncVal">Never</span></div>
+      </div>
+      <div class="terminal-container">
+        <div class="terminal-toolbar"><span class="terminal-label">ORCHESTRATOR EVENT STREAM</span><button class="btn-xs" id="btnClearEvents">Clear display</button></div>
+        <div class="terminal-body font-mono" id="liveTerminal"><div class="term-line term-system">[SYSTEM] Waiting for runtime events...</div></div>
+      </div>
+    </section>
+
+    <main class="content-split">
+      <section class="tasks-panel card">
+        <div class="panel-header"><h2>MANAGED PROJECT TASKS</h2><span class="count-pill" id="totalTasksCount">0 tasks</span></div>
+        <div class="task-list" id="taskList"><div class="placeholder-msg">Waiting for Issue queue...</div></div>
+      </section>
+      <section class="logs-panel card">
+        <div class="panel-header"><h2>REGISTERED PROJECTS</h2><button class="btn-sm" id="btnAddProjectSecondary">＋ Add Project</button></div>
+        <div class="project-list" id="projectList"></div>
+      </section>
+    </main>
+
+    <section class="card selected-project-card">
+      <div class="panel-header">
+        <h2>PROJECT CONTEXT / AGENTS / GRAPHIFY</h2>
+        <select id="projectSelect" class="form-input compact-select"></select>
+      </div>
+      <div id="selectedProject" class="selected-project-grid"></div>
+    </section>
   </div>
-  <div id="toast" class="muted"></div>
-  <div class="grid">
-    <section class="card wide"><h2>GitHub connection</h2><div id="githubAuth"></div></section>
-    <section class="card"><h2>Active task</h2><div id="active"></div></section>
-    <section class="card"><h2>Registered projects</h2><div id="projects"></div></section>
-    <section class="card"><h2>Issue queue</h2><div id="issues"></div></section>
-    <section class="card"><h2>Recent runtime events</h2><div id="events"></div></section>
-    <section class="card wide"><h2>Selected project configuration</h2><div id="selectedProject"></div></section>
+
+  <div class="modal-backdrop hidden" id="projectModal">
+    <div class="modal-card card">
+      <div class="modal-header"><h3>＋ Add Managed Git Project</h3><button class="modal-close" id="btnCloseProjectModal">&times;</button></div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label for="projectSource">Git project path / URL</label>
+          <input id="projectSource" class="form-input" placeholder="E:\Game studio\game  |  git@github.com:huyker/game.git  |  huyker/game">
+          <span class="form-help">Local paths are inspected for origin; orchestrator still works from its own isolated managed clone.</span>
+        </div>
+        <div class="form-grid">
+          <div class="form-group"><label for="projectId">Project ID <span class="label-muted">(optional)</span></label><input id="projectId" class="form-input" placeholder="gamegit"></div>
+          <div class="form-group"><label for="projectBranch">Default branch</label><input id="projectBranch" class="form-input" value="main"></div>
+        </div>
+        <div class="form-group"><label for="projectIssuesRepo">Issue repo <span class="label-muted">(optional)</span></label><input id="projectIssuesRepo" class="form-input" placeholder="huyker/game"></div>
+        <div id="projectAddStatus" class="form-help"></div>
+      </div>
+      <div class="modal-footer"><button class="btn btn-secondary" id="btnCancelProject">Cancel</button><button class="btn btn-primary" id="btnSaveProject">Add & Auto Sync</button></div>
+    </div>
   </div>
-</main>
-<script>
-const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-let lastStatus = null;
-async function api(path, opts={}) {
-  const next={...opts};
-  if ((next.method||'GET').toUpperCase()==='POST') next.headers={...(next.headers||{}),'X-Orchestrator-UI':'1'};
-  const r=await fetch(path,next); const j=await r.json(); if(!r.ok||j.ok===false) throw new Error(j.error||r.statusText); return j;
-}
-async function act(name) {
-  const toast=document.getElementById('toast');
-  try { const j=await api('/api/control/'+name,{method:'POST'}); toast.textContent=j.message||('Done: '+name); await refresh(); }
-  catch(e){ toast.textContent='Error: '+e.message; }
-}
-async function connectGitHub(){
-  const input=document.getElementById('githubToken');
-  const token=(input?.value||'').trim();
-  const toast=document.getElementById('toast');
-  if(!token){toast.textContent='Enter a GitHub token first.'; return;}
-  try {
-    const j=await api('/api/setup/github-token',{
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({token})
-    });
-    input.value='';
-    toast.textContent='GitHub connected as '+(j.github_auth?.login||'authenticated user');
-    await refresh();
-  } catch(e){toast.textContent='GitHub connection error: '+e.message;}
-}
-function renderGithubAuth(auth){
-  const host=document.getElementById('githubAuth');
-  if(auth?.connected){
-    host.innerHTML=`<span class="ok"><b>Connected</b></span> as <b>${esc(auth.login||'GitHub user')}</b>
-      <span class="muted">· credentials are stored locally and are never shown in the dashboard.</span>`;
-    return;
-  }
-  host.innerHTML=`<div class="warn"><b>Not connected.</b> Issue processing is disabled, but dashboard/project sync remains available.</div>
-    <div style="margin-top:10px"><input id="githubToken" type="password" autocomplete="off" placeholder="GitHub token (repo/issues/pull request access)">
-    <button onclick="connectGitHub()">Connect GitHub</button></div>
-    <div class="muted small" style="margin-top:8px">The app also auto-detects GITHUB_TOKEN, GH_TOKEN, or an existing <code>gh auth</code> login.</div>
-    ${auth?.error?`<div class="muted small" style="margin-top:6px">${esc(auth.error)}</div>`:''}`;
-}
-function renderActive(a){
-  if(!a) return '<span class="muted">No active task</span>';
-  const repo=a.payload?.issue_repo||'';
-  return `<div><b>${esc(repo)}#${esc(a.issue_number)}</b> <span class="badge">${esc(a.status)}</span></div><pre>${esc(JSON.stringify(a.payload,null,2))}</pre>`;
-}
-function renderProjects(rows){
-  if(!rows.length) return '<span class="muted">No projects</span>';
-  return rows.map(p=>{const g=p.graphify||{}; return `<div style="margin-bottom:14px"><b>${esc(p.id)}</b> <span class="muted">${esc(p.repo)}</span><br>
-    <span class="badge">${p.synced?'synced':'not synced'}</span>
-    <span class="badge">Issues: ${esc(p.issues_repo||p.repo)}</span>
-    <span class="badge">Graphify: ${g.enabled?(g.cli_available?(g.graph_exists?'ready':'no graph'):'CLI missing'):'off'}</span>
-    <div class="muted">Agents: ${esc((p.agents||[]).join(', ')||'—')}</div>
-    <div class="muted">Task profiles: ${esc((p.task_profiles||[]).join(', ')||'—')}</div>
-    ${p.error?`<div class="bad">${esc(p.error)}</div>`:''}</div>`}).join('');
-}
-function renderIssues(rows){
-  if(!rows.length) return '<span class="muted">No orch-labelled open Issues in registered project queues</span>';
-  return `<table><tr><th>Project Issue</th><th>Task</th><th>Labels</th></tr>${rows.map(i=>{
-    const t=i.task||{};
-    const task=i.task_error?`<span class="bad">${esc(i.task_error)}</span>`:`<b>${esc(t.task_id||'—')}</b><br><span class="muted">${esc(t.project||'')} · ${esc(t.type||'')} · rev ${esc(t.revision??'')}</span>`;
-    return `<tr><td><a target="_blank" href="${esc(i.url)}">${esc(i.issue_repo)}#${i.number}<br>${esc(i.title)}</a></td><td>${task}</td><td>${esc(i.labels.join(', '))}</td></tr>`;
-  }).join('')}</table>`;
-}
-function renderEvents(rows){ return '<pre>'+esc(rows.map(e=>new Date(e.created_at*1000).toLocaleTimeString()+' '+e.type+' '+JSON.stringify(e.payload)).join('\n'))+'</pre>'; }
-function syncProjectSelector(rows){
-  const select=document.getElementById('projectSelect');
-  const current=select.value;
-  const ids=rows.map(p=>p.id);
-  select.innerHTML=ids.map(id=>`<option value="${esc(id)}">${esc(id)}</option>`).join('');
-  if(ids.includes(current)) select.value=current;
-}
-function renderSelectedProject(){
-  const host=document.getElementById('selectedProject');
-  if(!lastStatus){host.innerHTML='<span class="muted">Loading…</span>';return;}
-  const id=document.getElementById('projectSelect').value;
-  const p=(lastStatus.projects||[]).find(x=>x.id===id);
-  if(!p){host.innerHTML='<span class="muted">Select a project</span>';return;}
-  const g=p.graphify||{};
-  host.innerHTML=`<div><b>${esc(p.id)}</b> — repo <code>${esc(p.repo)}</code> — Issue queue <code>${esc(p.issues_repo||p.repo)}</code></div>
-    <div style="margin:8px 0"><span class="badge">Graphify ${g.enabled?'enabled':'off'}</span><span class="badge">${g.graph_exists?'graph ready':'no graph'}</span></div>
-    <div class="grid">
-      <div><div class="muted small">Plans loaded</div><pre>${esc(JSON.stringify(p.plans||[],null,2))}</pre></div>
-      <div><div class="muted small">Agent profiles loaded from project</div><pre>${esc(JSON.stringify(p.agent_profiles||{},null,2))}</pre></div>
-      <div><div class="muted small">Task profiles loaded from project</div><pre>${esc(JSON.stringify(p.task_profile_configs||{},null,2))}</pre></div>
-      <div><div class="muted small">Graphify state</div><pre>${esc(JSON.stringify(g,null,2))}</pre></div>
-    </div>`;
-}
-async function refresh(){
-  try {
-    const s=await api('/api/status'); lastStatus=s;
-    document.getElementById('runtime').textContent=s.paused?'PAUSED':'RUNNING';
-    renderGithubAuth(s.github_auth||{});
-    const sync=s.auto_sync||{};
-    document.getElementById('syncState').textContent=sync.last_sync_at ? 'auto sync: '+new Date(sync.last_sync_at*1000).toLocaleTimeString() : 'auto sync: waiting';
-    document.getElementById('active').innerHTML=renderActive(s.active);
-    document.getElementById('projects').innerHTML=renderProjects(s.projects||[]);
-    document.getElementById('issues').innerHTML=renderIssues(s.issues||[]);
-    document.getElementById('events').innerHTML=renderEvents(s.events||[]);
-    syncProjectSelector(s.projects||[]); renderSelectedProject();
-  } catch(e){document.getElementById('toast').textContent='Status error: '+e.message;}
-}
-refresh(); setInterval(refresh,5000);
-</script>
+
+  <script src="/web/app.js"></script>
 </body>
 </html>
