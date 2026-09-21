@@ -55,11 +55,20 @@ cd orchestrator
 cp .env.example .env
 ```
 
-Edit `.env` and set only the GitHub token:
+You can run immediately without putting a token in `.env`:
 
-```env
-GITHUB_TOKEN=github_pat_xxx
+```bash
+python app.py
 ```
+
+GitHub authentication is resolved in this order:
+
+1. `GITHUB_TOKEN`;
+2. `GH_TOKEN`;
+3. existing GitHub CLI login from `gh auth token`;
+4. if none is available, the dashboard still opens and shows **Connect GitHub**, where you can paste a token once.
+
+A token entered in the dashboard is validated against GitHub, stored only in local `.env`, and activates the Issue worker without restarting the app.
 
 `ORCH_CONTROL_REPO` is no longer required. Managed-project task communication is routed from `projects.json -> issues_repo`.
 
@@ -117,10 +126,14 @@ dashboard bind
     ↓
 dashboard_verified
     ↓
+GitHub authenticated
+    ↓
 first project sync OK
     ↓
 Issue worker enabled
 ```
+
+If GitHub is not authenticated, the dashboard remains usable and project Git sync keeps retrying, but Issue reads/writes remain disabled.
 
 Successful startup prints:
 
@@ -214,7 +227,7 @@ Graphify never activates work and never overrides Issue requirements or project 
 Important settings:
 
 ```env
-GITHUB_TOKEN=
+GITHUB_TOKEN=                           # optional at startup
 # ORCH_CONTROL_REPO=huyker/orchestrator   # optional legacy fallback
 ORCH_PROJECT_REGISTRY=projects.json
 ORCH_RUNTIME_DIR=.orchestrator-runtime
