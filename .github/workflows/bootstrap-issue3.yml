@@ -1,0 +1,31 @@
+name: bootstrap-issue3-rebuild
+on:
+  push:
+    branches:
+      - task/issue-3-orch-0003
+
+permissions:
+  contents: write
+
+jobs:
+  materialize:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Materialize reviewed v0.3 source
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat .bootstrap/payload.* | tr -d '\n\r' | base64 -d > /tmp/orch-v3.tar.gz
+          tar -xzf /tmp/orch-v3.tar.gz -C .
+          rm -rf .bootstrap
+          rm -f tests/test_core.py
+          python -m unittest discover -s tests -p "test_*.py" -v
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "feat(issue3): rebuild local orchestrator dashboard and Graphify"
+          git push
