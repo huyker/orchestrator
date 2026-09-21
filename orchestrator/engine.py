@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime
 import fnmatch
 import json
 import os
@@ -98,6 +99,41 @@ class OrchestratorEngine:
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.close()
+
+    @property
+    def task_logs_dir(self) -> Path:
+        p = self.settings.runtime_dir / "task-logs"
+        p.mkdir(parents=True, exist_ok=True)
+        return p
+
+    def log_task(self, issue_number: int, stage: str, message: str, **details: Any) -> None:
+        try:
+            log_file = self.task_logs_dir / f"issue_{int(issue_number)}.log"
+            now_str = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+            lines = [f"[{now_str}] [{stage.upper()}] {message}"]
+            for k, v in details.items():
+                if v is not None:
+                    if isinstance(v, (dict, list)):
+                        lines.append(f"  > {k}: {json.dumps(v, ensure_ascii=False, indent=2)}")
+                    else:
+                        lines.append(f"  > {k}: {v}")
+            with open(log_file, "a", encoding="utf-8", errors="replace") as f:
+                f.write("\n".join(lines) + "\n")
+        except Exception:
+            pass
+
+    def get_task_log(self, issue_number: int, max_lines: int = 500) -> str:
+        log_file = self.task_logs_dir / f"issue_{int(issue_number)}.log"
+        if not log_file.exists():
+            return ""
+        try:
+            text = log_file.read_text(encoding="utf-8", errors="replace")
+            lines = text.splitlines()
+            if len(lines) > max_lines:
+                return "\n".join(lines[-max_lines:])
+            return text
+        except Exception as exc:
+            return f"Error reading task log: {exc}"
 
     def _refresh_agy_models_bg(self) -> None:
         binary = shutil.which(self.settings.agy_bin)
@@ -807,26 +843,41 @@ class OrchestratorEngine:
 
     def _reconcile_contract(self, lease: dict, issue: dict, task: dict, digest: str) -> tuple[dict, bool]:
         payload = dict(lease["payload"])
-        claimed_revision = int(payload["revision"])
+        claimed_revision = int(payload.get("revision", 0))
         current_revision = int(task["revision"])
-        claimed_hash = payload["contract_hash"]
+        claimed_hash = payload.get("contract_hash")
+        issue_num = lease["issue_number"]
+
+        if payload.get("task_id") and payload["task_id"] != task["task_id"]:
+            payload.update({"task_id": task["task_id"], "revision": current_revision, "contract_hash": digest, "rework_count": 0})
+            self.state.update_lease(self.instance_id, status="REWORK", payload=payload, issue_number=issue_num)
+            self.log_task(issue_num, "CONTRACT_RESYNC", f"Resynced task payload from {payload.get('task_id')} to {task['task_id']}")
+            return payload, True
+
         if current_revision == claimed_revision and digest != claimed_hash:
             self._block(lease, "same-revision Issue contract mutation detected; increment revision")
             return payload, False
         if current_revision < claimed_revision:
+            if payload.get("recovered_from_instance"):
+                payload.update({"revision": current_revision, "contract_hash": digest, "rework_count": 0})
+                self.state.update_lease(self.instance_id, status="REWORK", payload=payload, issue_number=issue_num)
+                self.log_task(issue_num, "CONTRACT_RESYNC", f"Resynced recovered lease revision from {claimed_revision} to {current_revision}")
+                return payload, True
             self._block(lease, "Issue revision moved backwards")
             return payload, False
         if current_revision > claimed_revision:
             payload.update({"revision": current_revision, "contract_hash": digest, "rework_count": 0})
-            self.state.update_lease(self.instance_id, status="REWORK", payload=payload)
-            self.set_label(lease["issue_number"], LABEL_REWORK)
-            self.event(lease["issue_number"], "revision_updated", revision=current_revision)
+            self.state.update_lease(self.instance_id, status="REWORK", payload=payload, issue_number=issue_num)
+            self.set_label(issue_num, LABEL_REWORK)
+            self.event(issue_num, "revision_updated", revision=current_revision)
+            self.log_task(issue_num, "REVISION_UPDATED", f"Task contract revision updated to {current_revision}")
             return payload, False
         return payload, True
 
     def _block(self, lease: dict, reason: str, **extra: Any) -> None:
         payload = dict(lease["payload"])
-        comment_id = self.event(lease["issue_number"], "blocked", post_to_github=False, reason=reason, **extra)
+        issue_num = lease["issue_number"]
+        comment_id = self.event(issue_num, "blocked", post_to_github=False, reason=reason, **extra)
         if comment_id:
             payload["command_after_comment_id"] = comment_id
         payload["blocked_reason"] = reason
@@ -840,7 +891,8 @@ class OrchestratorEngine:
             payload["blocked_output"] = json.dumps(extra["errors"], ensure_ascii=False, indent=2)
         else:
             payload["blocked_output"] = reason
-        self.state.update_lease(self.instance_id, status="BLOCKED", payload=payload)
+        self.state.update_lease(self.instance_id, status="BLOCKED", payload=payload, issue_number=issue_num)
+        self.log_task(issue_num, "BLOCKED", f"Task blocked: {reason}", **extra)
 
     def _required_gate(self, task: dict, profile: dict, payload: dict) -> dict | None:
         gates = list(task.get("user_gates", []))
@@ -907,8 +959,9 @@ class OrchestratorEngine:
             "executor_profile": executor["id"],
             "reviewer_profile": reviewer["id"],
         })
-        self.state.update_lease(self.instance_id, status="RUNNING", payload=payload)
+        self.state.update_lease(self.instance_id, status="RUNNING", payload=payload, issue_number=issue_number)
         self.set_label(issue_number, LABEL_RUNNING)
+        self.log_task(issue_number, "START", f"Starting executor run with model {executor.get('model')}, effort {executor.get('effort')}, role {executor.get('role')}")
 
         comments, discussion = self._discussion(issue_number)
         graph_context = ""
@@ -931,7 +984,9 @@ class OrchestratorEngine:
             )
 
         prompt = f"""# Local executor task\n\nGitHub Issue: {issue_repo}#{issue_number}\nThe Issue task contract is authoritative. Repository plan/rule files are context only.\n\n## Task contract\n{json.dumps(task, ensure_ascii=False, indent=2)}\n\n## Project task profile\n{json.dumps(profile, ensure_ascii=False, indent=2)}\n\n## Project executor profile\n{json.dumps(executor, ensure_ascii=False, indent=2)}\n\n## Approved user gates\n{json.dumps(approved_gates, ensure_ascii=False, indent=2)}\n{gate_instruction}\n## Project context\n{project_context}\n\n## Graphify context (advisory project intelligence, never task authority)\n{graph_context or '[not available]'}\n\n## Latest Issue discussion\n{discussion}\n\nRules:\n- Implement only this Issue contract and current revision.\n- Do not commit, push, create or merge PRs; orchestrator owns Git lifecycle.\n- Never edit orchestrator/project control files unless this task is explicitly authorized as project-config.\n- If product/user input is required, emit exactly one final line:\n  @@ORCH_EVENT@@ {{\"type\":\"question\",\"question_id\":\"stable-id\",\"message\":\"...\",\"options\":[]}}\n- Otherwise complete the requested implementation and local checks.\n"""
+        self.log_task(issue_number, "PROMPT", "Generated prompt for executor", prompt_preview=prompt[:600] + "...")
         code, output = self.run_agent(executor, prompt, worktree, issue_number)
+        self.log_task(issue_number, "EXECUTOR_OUTPUT", f"Executor finished with exit code {code}", output=output)
         question = self._question_from_output(output)
         if question:
             comment_id = self.event(issue_number, "question", **question)
@@ -939,8 +994,9 @@ class OrchestratorEngine:
                 "pending_question_id": question["question_id"],
                 "command_after_comment_id": comment_id,
             })
-            self.state.update_lease(self.instance_id, status="WAITING_ANSWER", payload=payload)
+            self.state.update_lease(self.instance_id, status="WAITING_ANSWER", payload=payload, issue_number=issue_number)
             self.set_label(issue_number, LABEL_QUESTION)
+            self.log_task(issue_number, "QUESTION", f"Agent emitted question: {question.get('question_id')}", message=question.get('message'))
             return
         if code:
             self._block(lease, "executor failed", exit_code=code, output=output[-4000:])
@@ -988,11 +1044,12 @@ class OrchestratorEngine:
                 "pending_gate_pr_head_sha": gate_head_sha,
                 "command_after_comment_id": comment_id,
             })
-            self.state.update_lease(self.instance_id, status="WAITING_USER_GATE", payload=payload)
+            self.state.update_lease(self.instance_id, status="WAITING_USER_GATE", payload=payload, issue_number=issue_number)
             self.set_label(issue_number, LABEL_GATE)
+            self.log_task(issue_number, "USER_GATE_REQUIRED", f"User gate required: {pending_gate['id']}", pr_number=pr['number'], pr_head_sha=gate_head_sha)
             return
 
-        self.state.update_lease(self.instance_id, status="VALIDATING", payload=payload)
+        self.state.update_lease(self.instance_id, status="VALIDATING", payload=payload, issue_number=issue_number)
         first = self.machine_acceptance(task, catalog, profile, worktree)
         if not first["pass"]:
             self._schedule_rework(lease, payload, task, "acceptance_failed", report=first)
@@ -1001,8 +1058,10 @@ class OrchestratorEngine:
         diff = self.workspace.diff(worktree, task["base_branch"])
         reviewer_context = self.build_context(worktree, task, catalog, profile, reviewer)
         reviewer_prompt = f"""# Independent reviewer\n\nGitHub Issue: {issue_repo}#{issue_number}\nYou did not implement this task. Review the Issue contract plus actual files/diff/tests.\n\n## Task\n{json.dumps(task, ensure_ascii=False, indent=2)}\n\n## Reviewer profile\n{json.dumps(reviewer, ensure_ascii=False, indent=2)}\n\n## Project context\n{reviewer_context}\n\n## Graphify context (advisory)\n{graph_context or '[not available]'}\n\n## Deterministic acceptance\n{json.dumps(first, ensure_ascii=False, indent=2)}\n\n## Actual diff\n{diff}\n\nInspect actual files/assets/tests directly. End output with exactly one line:\n@@ORCH_REVIEW@@ {{\"verdict\":\"PASS|FAIL\",\"score\":0,\"summary\":\"...\",\"findings\":[],\"acceptance\":[{{\"criterion\":\"exact acceptance string\",\"status\":\"PASS|FAIL\",\"evidence\":\"exact evidence\"}}],\"prohibited\":[{{\"rule\":\"exact prohibited string\",\"status\":\"PASS|FAIL\",\"evidence\":\"exact evidence\"}}],\"risks\":[]}}\nEvery acceptance/prohibited item must appear exactly and include evidence.\n"""
-        self.state.update_lease(self.instance_id, status="INTERNAL_REVIEW", payload=payload)
+        self.state.update_lease(self.instance_id, status="INTERNAL_REVIEW", payload=payload, issue_number=issue_number)
+        self.log_task(issue_number, "REVIEWER_START", f"Starting independent reviewer with model {reviewer.get('model')}")
         reviewer_code, reviewer_output = self.run_agent(reviewer, reviewer_prompt, worktree, issue_number)
+        self.log_task(issue_number, "REVIEWER_OUTPUT", f"Reviewer finished with exit code {reviewer_code}", output=reviewer_output)
         if reviewer_code:
             self._block(lease, "reviewer infrastructure failure", exit_code=reviewer_code, output=reviewer_output[-4000:])
             return
@@ -1011,7 +1070,7 @@ class OrchestratorEngine:
             self._schedule_rework(lease, payload, task, "review_failed", review=review, errors=review_errors)
             return
 
-        self.state.update_lease(self.instance_id, status="VALIDATING", payload=payload)
+        self.state.update_lease(self.instance_id, status="VALIDATING", payload=payload, issue_number=issue_number)
         final = self.machine_acceptance(task, catalog, profile, worktree)
         if not final["pass"]:
             self._schedule_rework(lease, payload, task, "final_acceptance_failed", report=final)
@@ -1046,8 +1105,9 @@ class OrchestratorEngine:
             "command_after_comment_id": comment_id,
             "rework_count": 0,
         })
-        self.state.update_lease(self.instance_id, status="WAITING_GPT_REVIEW", payload=payload)
+        self.state.update_lease(self.instance_id, status="WAITING_GPT_REVIEW", payload=payload, issue_number=issue_number)
         self.set_label(issue_number, LABEL_GPT_REVIEW)
+        self.log_task(issue_number, "READY_FOR_GPT_REVIEW", f"Task is ready for GPT review: PR #{pr['number']}, sha {head_sha}")
 
     def _schedule_rework(self, lease: dict, payload: dict, task: dict, event_type: str, **details: Any) -> None:
         issue_number = lease["issue_number"]
@@ -1060,18 +1120,34 @@ class OrchestratorEngine:
         if count > max_rework:
             payload["blocked_reason"] = f"rework limit exceeded ({max_rework})"
             payload["blocked_output"] = f"Task rework count {count} exceeded max_rework limit of {max_rework}."
-            self.state.update_lease(self.instance_id, status="BLOCKED", payload=payload)
+            self.state.update_lease(self.instance_id, status="BLOCKED", payload=payload, issue_number=issue_number)
+            self.log_task(issue_number, "BLOCKED", payload["blocked_reason"], output=payload["blocked_output"])
             return
-        self.state.update_lease(self.instance_id, status="REWORK", payload=payload)
+        self.state.update_lease(self.instance_id, status="REWORK", payload=payload, issue_number=issue_number)
         self.set_label(issue_number, LABEL_REWORK)
+        self.log_task(issue_number, "REWORK", f"Scheduled rework count {count}/{max_rework}", event=event_type, **details)
 
     def _handle_active(self, lease: dict) -> None:
         issue_number = lease["issue_number"]
         issue, task, digest = self._load_issue_task(issue_number)
+        labels = [l.get("name", "") if isinstance(l, dict) else str(l) for l in issue.get("labels", [])]
+        issue_state = str(issue.get("state", "open")).lower()
+
+        # If issue is already closed or marked done, release worker lease
+        if issue_state == "closed" or LABEL_DONE in labels or "orch:done" in labels:
+            self.state.release(self.instance_id, issue_number=issue_number)
+            return
+
         payload, ok = self._reconcile_contract(lease, issue, task, digest)
         if not ok:
             return
         status = lease["status"]
+
+        # Synchronize lifecycle if issue was transitioned on GitHub
+        if LABEL_GPT_REVIEW in labels and status not in ("WAITING_GPT_REVIEW", "APPROVED_WAITING_MERGE", "BLOCKED"):
+            status = "WAITING_GPT_REVIEW"
+            self.state.update_lease(self.instance_id, status="WAITING_GPT_REVIEW", payload=payload, issue_number=issue_number)
+
         comments = self.github.comments(self._issue_repo(issue_number), issue_number)
         revision = int(payload["revision"])
         after = int(payload.get("command_after_comment_id", 0))
@@ -1080,7 +1156,7 @@ class OrchestratorEngine:
             self.event(issue_number, "recovered_after_restart", post_to_github=False, previous_instance=payload.get("recovered_from_instance"))
             payload.pop("blocked_reason", None)
             payload.pop("blocked_output", None)
-            self.state.update_lease(self.instance_id, status="REWORK", payload=payload)
+            self.state.update_lease(self.instance_id, status="REWORK", payload=payload, issue_number=issue_number)
             self.set_label(issue_number, LABEL_REWORK)
             return
 
@@ -1104,7 +1180,7 @@ class OrchestratorEngine:
                 command, _ = found
                 self.event(issue_number, "answer_received", question_id=question_id, answer=command.get("answer"))
                 payload.pop("pending_question_id", None)
-                self.state.update_lease(self.instance_id, status="REWORK", payload=payload)
+                self.state.update_lease(self.instance_id, status="REWORK", payload=payload, issue_number=issue_number)
                 self.set_label(issue_number, LABEL_REWORK)
             return
 
@@ -1127,7 +1203,7 @@ class OrchestratorEngine:
                     payload.pop("pending_gate_id", None)
                     payload.pop("pending_gate_digest", None)
                     payload.pop("pending_gate_pr_head_sha", None)
-                    self.state.update_lease(self.instance_id, status="REWORK", payload=payload)
+                    self.state.update_lease(self.instance_id, status="REWORK", payload=payload, issue_number=issue_number)
                     self.set_label(issue_number, LABEL_REWORK)
                     return
             found = self._find_command(
@@ -1159,29 +1235,30 @@ class OrchestratorEngine:
                     artifact_digest=artifact_digest,
                     pr_head_sha=expected_head,
                 )
-                self.state.update_lease(self.instance_id, status="REWORK", payload=payload)
+                self.state.update_lease(self.instance_id, status="REWORK", payload=payload, issue_number=issue_number)
                 self.set_label(issue_number, LABEL_REWORK)
             return
 
         if status == "WAITING_GPT_REVIEW":
-            pr_number = int(payload["pr_number"])
-            pr = self.github.get_pr(payload["target_repo"], pr_number)
-            actual_head = ((pr.get("head") or {}).get("sha") or "")
-            if actual_head and actual_head != payload.get("pr_head_sha"):
-                self.event(issue_number, "pr_head_changed", previous=payload.get("pr_head_sha"), current=actual_head)
-                payload["pr_head_sha"] = actual_head
-                self.state.update_lease(self.instance_id, status="REWORK", payload=payload)
-                self.set_label(issue_number, LABEL_REWORK)
-                return
-            cycle = int(payload["review_cycle"])
-            expected_sha = payload["pr_head_sha"]
+            pr_number = int(payload.get("pr_number") or 0)
+            if pr_number:
+                pr = self.github.get_pr(payload["target_repo"], pr_number)
+                actual_head = ((pr.get("head") or {}).get("sha") or "")
+                if actual_head and actual_head != payload.get("pr_head_sha"):
+                    self.event(issue_number, "pr_head_changed", previous=payload.get("pr_head_sha"), current=actual_head)
+                    payload["pr_head_sha"] = actual_head
+                    self.state.update_lease(self.instance_id, status="REWORK", payload=payload, issue_number=issue_number)
+                    self.set_label(issue_number, LABEL_REWORK)
+                    return
+            cycle = int(payload.get("review_cycle", 1))
+            expected_sha = payload.get("pr_head_sha")
             found = self._find_command(
                 comments,
                 issue_number,
                 "external_review",
                 revision,
                 after_comment_id=after,
-                predicate=lambda cmd: int(cmd.get("review_cycle", -1)) == cycle and cmd.get("pr_head_sha") == expected_sha,
+                predicate=lambda cmd: int(cmd.get("review_cycle", -1)) == cycle and (not expected_sha or cmd.get("pr_head_sha") == expected_sha),
             )
             if not found:
                 return
@@ -1189,11 +1266,11 @@ class OrchestratorEngine:
             verdict = command.get("verdict")
             if verdict == "FIX_REQUIRED":
                 self.event(issue_number, "gpt_fix_required", findings=command.get("findings", []), review_cycle=cycle)
-                self.state.update_lease(self.instance_id, status="REWORK", payload=payload)
+                self.state.update_lease(self.instance_id, status="REWORK", payload=payload, issue_number=issue_number)
                 self.set_label(issue_number, LABEL_REWORK)
             elif verdict == "PASS":
                 self.event(issue_number, "gpt_approved", review_cycle=cycle, pr_head_sha=expected_sha)
-                self.state.update_lease(self.instance_id, status="APPROVED_WAITING_MERGE", payload=payload)
+                self.state.update_lease(self.instance_id, status="APPROVED_WAITING_MERGE", payload=payload, issue_number=issue_number)
                 self.set_label(issue_number, LABEL_APPROVED)
             else:
                 self._block(lease, f"invalid external_review verdict: {verdict}")
@@ -1205,7 +1282,7 @@ class OrchestratorEngine:
                 self.event(issue_number, "complete", merged_pr=pr["html_url"])
                 self.set_label(issue_number, LABEL_DONE)
                 self.github.close_issue(self._issue_repo(issue_number), issue_number)
-                self.state.release(self.instance_id)
+                self.state.release(self.instance_id, issue_number=issue_number)
             elif pr.get("state") == "closed":
                 self._block(lease, "PR closed without merge")
             return
@@ -1222,7 +1299,7 @@ class OrchestratorEngine:
                 self.event(issue_number, "retry_accepted", post_to_github=False)
                 payload.pop("blocked_reason", None)
                 payload.pop("blocked_output", None)
-                self.state.update_lease(self.instance_id, status="REWORK", payload=payload)
+                self.state.update_lease(self.instance_id, status="REWORK", payload=payload, issue_number=issue_number)
                 self.set_label(issue_number, LABEL_REWORK)
             return
 
@@ -1295,26 +1372,37 @@ class OrchestratorEngine:
         for issue in issues:
             labels = [l.get("name", "") if isinstance(l, dict) else str(l) for l in issue.get("labels", [])]
             num = int(issue["number"])
-            if LABEL_WAITING_CONDITION not in labels and LABEL_READY not in labels:
+            is_waiting = LABEL_WAITING_CONDITION in labels
+            is_ready = LABEL_READY in labels
+            is_blocked = LABEL_BLOCKED in labels
+            if not (is_waiting or is_ready or is_blocked):
                 continue
             try:
                 task = parse_task(issue.get("body") or "")
+                # Only evaluate blocked issues if they have a condition contract
+                if is_blocked and not task.get("condition"):
+                    continue
                 lid = self._parse_canonical_id(issue)
                 satisfied, reason, is_invalid = self._evaluate_task_condition(task, lid, issues)
                 if is_invalid:
-                    self.set_label(num, LABEL_BLOCKED, issue_repo)
-                    self.event(num, "blocked", post_to_github=False, issue_repo=issue_repo, reason=f"invalid condition: {reason}")
+                    if not is_blocked:
+                        self.set_label(num, LABEL_BLOCKED, issue_repo)
+                        self.event(num, "blocked", post_to_github=False, issue_repo=issue_repo, reason=f"invalid condition: {reason}")
                     continue
-                if satisfied and LABEL_WAITING_CONDITION in labels:
+                if satisfied and (is_waiting or is_blocked):
                     self.set_label(num, LABEL_READY, issue_repo)
                     if LABEL_WAITING_CONDITION in labels:
                         labels.remove(LABEL_WAITING_CONDITION)
+                    if LABEL_BLOCKED in labels:
+                        labels.remove(LABEL_BLOCKED)
                     if LABEL_READY not in labels:
                         labels.append(LABEL_READY)
-                elif not satisfied and LABEL_READY in labels:
+                elif not satisfied and (is_ready or is_blocked):
                     self.set_label(num, LABEL_WAITING_CONDITION, issue_repo)
                     if LABEL_READY in labels:
                         labels.remove(LABEL_READY)
+                    if LABEL_BLOCKED in labels:
+                        labels.remove(LABEL_BLOCKED)
                     if LABEL_WAITING_CONDITION not in labels:
                         labels.append(LABEL_WAITING_CONDITION)
             except Exception:
@@ -1542,7 +1630,7 @@ class OrchestratorEngine:
                         lifecycle = self._lifecycle(active_status, labels)
                         if active_status == "BLOCKED" or lifecycle.get("is_blocked"):
                             lifecycle["blocked_reason"] = active_payload.get("blocked_reason") or ""
-                            lifecycle["blocked_output"] = active_payload.get("blocked_output") or ""
+                            lifecycle["blocked_output"] = active_payload.get("blocked_output") or self.get_task_log(int(row["number"]))
                         queue.append({
                             "issue_repo": issue_repo,
                             "project_ids": sorted(project_ids),
@@ -1563,15 +1651,17 @@ class OrchestratorEngine:
         for l in active_leases:
             p = dict(l.get("payload") or {})
             lc = self._lifecycle(l["status"])
+            task_log = self.get_task_log(l["issue_number"])
             if l["status"] == "BLOCKED" or lc.get("is_blocked"):
                 lc["blocked_reason"] = p.get("blocked_reason") or ""
-                lc["blocked_output"] = p.get("blocked_output") or ""
+                lc["blocked_output"] = p.get("blocked_output") or task_log
             active_tasks.append({
                 "issue_number": l["issue_number"],
                 "status": l["status"],
                 "instance_id": l["instance_id"],
                 "payload": p,
                 "lifecycle": lc,
+                "task_log": task_log,
                 "heartbeat": l.get("heartbeat"),
                 "created_at": l.get("created_at"),
             })

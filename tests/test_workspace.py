@@ -89,8 +89,15 @@ class WorkspaceTests(unittest.TestCase):
             sha = wm.commit_push(wt, branch, "task")
 
             subprocess.run(["git", "-C", str(wm.repo_dir("o/r")), "worktree", "remove", "--force", str(wt)], check=True)
+            import os
             import shutil
-            shutil.rmtree(wm.repo_dir("o/r"))
+            import stat
+
+            def _remove_readonly(func, path, _):
+                os.chmod(path, stat.S_IWRITE)
+                func(path)
+
+            shutil.rmtree(wm.repo_dir("o/r"), onerror=_remove_readonly)
             shutil.rmtree(settings.runtime_dir / "worktrees", ignore_errors=True)
 
             wm2 = LocalWorkspace(settings, origin)

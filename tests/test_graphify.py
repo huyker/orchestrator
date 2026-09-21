@@ -1,5 +1,6 @@
 import json
 import os
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -12,10 +13,7 @@ class GraphifyAdapterTests(unittest.TestCase):
     def _fake_graphify(self, root: Path) -> Path:
         bin_dir = root / "bin"
         bin_dir.mkdir()
-        script = bin_dir / "graphify"
-        script.write_text(
-            """#!/usr/bin/env python3
-import json
+        py_code = """import json
 import sys
 from pathlib import Path
 root = Path.cwd()
@@ -28,10 +26,16 @@ out = root / 'graphify-out'
 out.mkdir(exist_ok=True)
 (out / 'graph.json').write_text('{"nodes": [], "edges": []}', encoding='utf-8')
 print('graph ready')
-""",
-            encoding="utf-8",
-        )
-        script.chmod(0o755)
+"""
+        if os.name == "nt":
+            py_script = bin_dir / "graphify_runner.py"
+            py_script.write_text(py_code, encoding="utf-8")
+            cmd = bin_dir / "graphify.cmd"
+            cmd.write_text(f'@"{sys.executable}" "{py_script}" %*\n', encoding="utf-8")
+        else:
+            script = bin_dir / "graphify"
+            script.write_text("#!/usr/bin/env python3\n" + py_code, encoding="utf-8")
+            script.chmod(0o755)
         return bin_dir
 
     def test_build_update_and_query(self):

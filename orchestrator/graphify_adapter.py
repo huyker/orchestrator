@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import tempfile
@@ -51,7 +52,8 @@ class GraphifyAdapter:
             out_path = Path(fh.name)
         stream = out_path.open("wb")
         try:
-            proc = subprocess.Popen(args, cwd=root, stdout=stream, stderr=subprocess.STDOUT)
+            shell = (os.name == "nt")
+            proc = subprocess.Popen(args, cwd=root, stdout=stream, stderr=subprocess.STDOUT, shell=shell)
             started = time.time()
             timed_out = False
             while proc.poll() is None:

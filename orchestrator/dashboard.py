@@ -67,6 +67,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 "available": self.engine.get_available_agy_models(),
             })
             return
+        match = re.match(r"^/api/tasks/(\d+)/log(?:[.]txt)?$", route)
+        if match:
+            issue_num = int(match.group(1))
+            self._json({
+                "ok": True,
+                "issue_number": issue_num,
+                "log": self.engine.get_task_log(issue_num),
+            })
+            return
         self._json({"error": "not found"}, 404)
 
     def do_POST(self) -> None:

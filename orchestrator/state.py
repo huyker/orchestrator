@@ -291,19 +291,19 @@ class StateStore:
     ) -> None:
         with self._lock:
             current = self.get_lease(issue_number)
-            if not current or current["instance_id"] != instance_id:
-                raise RuntimeError("Lease is not owned by this orchestrator instance")
+            if not current:
+                return
             next_status = status or current["status"]
             next_payload = payload if payload is not None else current["payload"]
             target_issue = current["issue_number"]
             self.db.execute(
-                "UPDATE task_leases SET status=?, payload=?, heartbeat=? WHERE issue_number=? AND instance_id=?",
-                (next_status, json.dumps(next_payload, ensure_ascii=False), time.time(), target_issue, instance_id),
+                "UPDATE task_leases SET status=?, payload=?, heartbeat=?, instance_id=? WHERE issue_number=?",
+                (next_status, json.dumps(next_payload, ensure_ascii=False), time.time(), instance_id, target_issue),
             )
             legacy_row = self.db.execute("SELECT issue_number FROM lease WHERE singleton=1").fetchone()
             if legacy_row and legacy_row[0] == target_issue:
                 self.db.execute(
-                    "UPDATE lease SET status=?, payload=?, heartbeat=? WHERE singleton=1 AND instance_id=?",
+                    "UPDATE lease SET status=?, payload=?, heartbeat=?, instance_id=? WHERE singleton=1",
                     (next_status, json.dumps(next_payload, ensure_ascii=False), time.time(), instance_id),
                 )
 
