@@ -46,11 +46,15 @@ Answer the exact pending question:
 {"command":"answer","revision":1,"question_id":"targeting-choice","answer":"Use nearest target"}
 ```
 
-Approve an exact user-gate artifact digest:
+When a user gate is reached, local commits/pushes only the gate-stage artifacts to the same task branch/PR and posts the PR URL, artifact digest and exact PR head SHA to the Issue. The user reviews that GitHub-visible concept before detailed production.
+
+Approve the exact gate artifact + PR head:
 
 ```orchestrator-command
-{"command":"approve_gate","revision":1,"gate_id":"asset-concept","artifact_digest":"sha256..."}
+{"command":"approve_gate","revision":1,"gate_id":"asset-concept","artifact_digest":"sha256...","pr_head_sha":"<exact concept head sha>"}
 ```
+
+If the PR head changes before approval, the pending approval is invalidated and the gate is regenerated.
 
 External GPT review is bound to an exact review cycle and PR head SHA:
 
