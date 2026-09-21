@@ -6,7 +6,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from orchestrator.dashboard import make_server
+from orchestrator.dashboard import make_server, verify_dashboard
 from orchestrator.github_client import GitHubClient
 
 
@@ -23,8 +23,13 @@ class FakePagedGitHub(GitHubClient):
         return []
 
 
+class FakeState:
+    def __init__(self): self.verified=None; self.events=[]
+    def mark_dashboard_verified(self,address): self.verified=address
+    def add_event(self,event_type,payload): self.events.append((event_type,payload))
+
 class FakeEngine:
-    def __init__(self): self.paused=False
+    def __init__(self): self.paused=False; self.state=FakeState()
     def snapshot(self): return {"paused":self.paused,"active":None,"projects":[],"issues":[],"events":[]}
     def pause(self): self.paused=True
     def resume(self): self.paused=False
@@ -38,6 +43,18 @@ class GitHubDashboardTests(unittest.TestCase):
     def test_pagination_reads_past_100(self):
         client = FakePagedGitHub()
         self.assertEqual(len(client.paged("/x")), 101)
+
+    def test_dashboard_smoke_marks_bootstrap_verified(self):
+        engine = FakeEngine()
+        server = make_server(engine,"127.0.0.1",0)
+        thread = threading.Thread(target=server.serve_forever,daemon=True); thread.start()
+        try:
+            port=server.server_address[1]
+            address=verify_dashboard(engine,"127.0.0.1",port)
+            self.assertEqual(engine.state.verified,address)
+            self.assertEqual(engine.state.events[-1][0],"dashboard_verified")
+        finally:
+            server.shutdown(); server.server_close()
 
     def test_dashboard_health_and_pause(self):
         engine = FakeEngine()
