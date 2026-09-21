@@ -4,6 +4,8 @@ import hashlib
 import json
 import os
 import re
+import shutil
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -36,6 +38,28 @@ ALL_LABELS = {
 }
 
 
+def discover_github_token() -> str:
+    for key in ("GITHUB_TOKEN", "GH_TOKEN"):
+        value = os.getenv(key, "").strip()
+        if value:
+            return value
+    gh = shutil.which("gh")
+    if gh:
+        try:
+            proc = subprocess.run(
+                [gh, "auth", "token"],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                timeout=5,
+            )
+            if proc.returncode == 0 and proc.stdout.strip():
+                return proc.stdout.strip()
+        except (OSError, subprocess.SubprocessError):
+            pass
+    return ""
+
+
 @dataclass(frozen=True)
 class Settings:
     control_repo: str
@@ -57,11 +81,9 @@ class Settings:
     @classmethod
     def from_env(cls) -> "Settings":
         control_repo = os.getenv("ORCH_CONTROL_REPO", "").strip()
-        token = os.getenv("GITHUB_TOKEN", "").strip()
+        token = discover_github_token()
         if control_repo and "/" not in control_repo:
             raise ValueError("ORCH_CONTROL_REPO must be OWNER/REPO when provided")
-        if not token:
-            raise ValueError("GITHUB_TOKEN is required")
 
         registry_file = Path(os.getenv("ORCH_PROJECT_REGISTRY", "projects.json")).resolve()
         runtime = Path(os.getenv("ORCH_RUNTIME_DIR", ".orchestrator-runtime")).resolve()
