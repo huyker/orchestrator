@@ -21,6 +21,13 @@ def settings_for(td):
 
 
 class EngineTests(unittest.TestCase):
+    def test_tick_is_hard_gated_until_dashboard_verified(self):
+        with tempfile.TemporaryDirectory() as td:
+            engine = OrchestratorEngine(settings_for(td))
+            engine.github.list_ready_issues = lambda repo: (_ for _ in ()).throw(AssertionError("Issue queue must not be read"))
+            engine.tick()
+            self.assertFalse(engine.state.is_dashboard_verified())
+
     def test_question_answer_binding_and_replay_protection(self):
         with tempfile.TemporaryDirectory() as td:
             engine = OrchestratorEngine(settings_for(td))
