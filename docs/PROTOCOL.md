@@ -1,10 +1,16 @@
 # GitHub Issue Protocol v1
 
-GitHub Issue is the task/message source of truth. Each managed project owns its Issue queue via `projects.json -> issues_repo`; project repositories store plans/rules/agent profiles/source code, but **not active task transport/state files in source branches**.
+For **managed projects**, GitHub Issue is the task/message source of truth. Each managed project owns its Issue queue via `projects.json -> issues_repo`; project repositories store plans/rules/agent profiles/source code, but **not active task transport/state files in source branches**.
+
+This protocol does not govern development of `huyker/orchestrator` itself. Orchestrator code changes are implemented/reviewed/merged directly without creating runtime task Issues.
+
+## Bootstrap prerequisite
+
+The local dashboard must first start successfully and pass both `/api/health` and `/api/status`. Before `dashboard_verified` is persisted, the scheduler cannot poll/claim/process managed-project Issues.
 
 ## Task contract
 
-Create/open one Issue in the selected project's configured `issues_repo` (defaults to the project repo) with lifecycle label `orch:ready` and exactly one block:
+After dashboard verification, create/open one Issue in the selected project's configured `issues_repo` (defaults to the project repo) with lifecycle label `orch:ready` and exactly one block:
 
 ```orchestrator-task
 {
