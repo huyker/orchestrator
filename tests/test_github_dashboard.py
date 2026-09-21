@@ -29,9 +29,12 @@ class FakeState:
     def add_event(self,event_type,payload): self.events.append((event_type,payload))
 
 class FakeEngine:
-    def __init__(self): self.paused=False; self.state=FakeState(); self.connected_token=None
+    def __init__(self): self.paused=False; self.state=FakeState(); self.connected_token=None; self.added_project=None
     def snapshot(self): return {"paused":self.paused,"github_auth":{"connected":False},"active":None,"projects":[],"issues":[],"events":[]}
     def connect_github_token(self, token): self.connected_token=token; return {"connected":True,"login":"owner","error":None}
+    def add_managed_project(self, source, project_id=None, issues_repo=None, default_branch="main"):
+        self.added_project={"source":source,"id":project_id or "demo","issues_repo":issues_repo or "acme/demo","default_branch":default_branch}
+        return self.added_project
     def pause(self): self.paused=True
     def resume(self): self.paused=False
     def tick(self): pass
@@ -74,6 +77,27 @@ class GitHubDashboardTests(unittest.TestCase):
                 data=json.loads(r.read())
             self.assertTrue(data["github_auth"]["connected"])
             self.assertEqual(engine.connected_token,"secret-token")
+        finally:
+            server.shutdown(); server.server_close()
+
+    def test_dashboard_can_add_managed_project(self):
+        engine = FakeEngine()
+        server = make_server(engine,"127.0.0.1",0)
+        thread = threading.Thread(target=server.serve_forever,daemon=True); thread.start()
+        try:
+            port=server.server_address[1]
+            payload=json.dumps({"source":"acme/demo","project_id":"demo","default_branch":"main"}).encode()
+            req=urllib.request.Request(
+                f"http://127.0.0.1:{port}/api/projects/add",
+                data=payload,
+                method="POST",
+                headers={"X-Orchestrator-UI":"1","Content-Type":"application/json"},
+            )
+            with urllib.request.urlopen(req) as response:
+                data=json.loads(response.read())
+            self.assertTrue(data["ok"])
+            self.assertEqual(engine.added_project["source"],"acme/demo")
+            self.assertEqual(engine.added_project["id"],"demo")
         finally:
             server.shutdown(); server.server_close()
 
