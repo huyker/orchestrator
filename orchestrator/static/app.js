@@ -157,38 +157,53 @@ function renderDashboardKPIs(status) {
   const projects = status.projects || [];
   const issues = status.issues || [];
   const metrics = status.metrics || {};
+  const cap = status.worker_capacity || { active: 0, max: 2 };
 
   document.getElementById('dashTotalProjects').textContent = projects.length;
   document.getElementById('dashTotalTasks').textContent = issues.length;
   document.getElementById('dashReadyTasks').textContent = metrics.ready || 0;
   document.getElementById('dashActiveTasks').textContent = (metrics.in_progress || 0) + (metrics.review || 0);
 
+  const workerBadge = document.getElementById('workerBadge');
+  if (workerBadge) {
+    workerBadge.innerHTML = `<span class="status-dot"></span> Workers: ${cap.active}/${cap.max}`;
+    workerBadge.title = `Đang chạy: ${cap.active} task song song · Tối đa: ${cap.max} (ORCH_MAX_WORKERS)`;
+  }
+
   document.getElementById('navProjectCount').textContent = projects.length;
   document.getElementById('projectsPill').textContent = `${projects.length} dự án`;
 
-  // Render Active / Blocked Task Card on Dashboard
+  // Render Active / Blocked Task Cards on Dashboard
   const activeTaskSection = document.getElementById('dashActiveTaskSection');
   if (activeTaskSection) {
-    const active = status.active;
-    if (active && active.issue_number) {
-      const p = active.payload || {};
-      const lc = status.active_lifecycle || {};
-      const isBlocked = active.status === 'BLOCKED' || lc.is_blocked;
-      const statusBadgeCls = isBlocked ? 'blocked' : 'running';
-      const statusBadgeText = isBlocked ? '⚠️ BLOCKED' : '⚡ RUNNING';
-      activeTaskSection.className = `active-task-hero-card ${isBlocked ? 'blocked-active' : ''}`;
-      activeTaskSection.innerHTML = `
-        <div class="active-task-header">
-          <div class="active-task-title-group">
-            <span class="active-task-badge ${statusBadgeCls}">${statusBadgeText}</span>
-            <span class="active-task-name font-mono">#${esc(active.issue_number)} · ${esc(p.task_id || 'TASK')} (${esc(p.project || p.issue_repo)})</span>
+    const activeList = (status.active_tasks && status.active_tasks.length > 0)
+      ? status.active_tasks
+      : (status.active && status.active.issue_number ? [status.active] : []);
+
+    if (activeList.length > 0) {
+      activeTaskSection.className = 'active-tasks-container';
+      activeTaskSection.innerHTML = activeList.map(task => {
+        const p = task.payload || {};
+        const lc = task.lifecycle || {};
+        const isBlocked = task.status === 'BLOCKED' || lc.is_blocked;
+        const statusBadgeCls = isBlocked ? 'blocked' : 'running';
+        const statusBadgeText = isBlocked ? '⚠️ BLOCKED' : '⚡ RUNNING';
+        return `
+          <div class="active-task-hero-card ${isBlocked ? 'blocked-active' : ''}">
+            <div class="active-task-header">
+              <div class="active-task-title-group">
+                <span class="active-task-badge ${statusBadgeCls}">${statusBadgeText}</span>
+                <span class="active-task-name font-mono">#${esc(task.issue_number)} · ${esc(p.task_id || 'TASK')} (${esc(p.project || p.issue_repo)})</span>
+              </div>
+              <div class="active-task-actions">
+                ${isBlocked ? `<button class="btn btn-sm btn-warning" onclick="retryActiveTask(event)">🔄 Thử Lại</button>` : ''}
+                <a href="https://github.com/${esc(p.issue_repo || '')}/issues/${esc(task.issue_number)}" target="_blank" class="btn btn-sm btn-outline">Mở Issue trên GitHub ↗</a>
+              </div>
+            </div>
+            ${renderLifecycleStepper(lc)}
           </div>
-          <div>
-            <a href="https://github.com/${esc(p.issue_repo || '')}/issues/${esc(active.issue_number)}" target="_blank" class="btn btn-sm btn-outline">Mở Issue trên GitHub ↗</a>
-          </div>
-        </div>
-        ${renderLifecycleStepper(lc)}
-      `;
+        `;
+      }).join('');
     } else {
       activeTaskSection.className = 'hidden';
       activeTaskSection.innerHTML = '';
@@ -539,6 +554,7 @@ function renderDetailTasks(project) {
   const filtered = allProjectIssues.filter(item => {
     const lc = item.lifecycle || {};
     if (currentTaskFilter === 'ready') return lc.status === 'READY';
+    if (currentTaskFilter === 'waiting') return lc.status === 'WAITING_CONDITION';
     if (currentTaskFilter === 'in_progress') return [1, 2, 3].includes(lc.stage_index);
     if (currentTaskFilter === 'review') return lc.stage_index === 4;
     if (currentTaskFilter === 'done') return lc.stage_index === 5;
@@ -559,14 +575,16 @@ function renderDetailTasks(project) {
   container.innerHTML = filtered.map(item => {
     const task = item.task || {};
     const lc = item.lifecycle || {};
+    const isWaiting = lc.status === 'WAITING_CONDITION';
+    const conditions = task.condition || [];
     return `
       <div class="task-item">
         <div class="task-item-header">
           <span class="task-ref font-mono">
             #${esc(item.number)} · ${esc(task.task_id || 'ISSUE')}
           </span>
-          <span class="task-state-badge highlight-cyan font-mono">
-            ${esc(lc.status || 'UNKNOWN')}
+          <span class="task-state-badge ${isWaiting ? 'waiting' : 'highlight-cyan'} font-mono">
+            ${isWaiting ? '⏳ CHỜ PHỤ THUỘC' : esc(lc.status || 'UNKNOWN')}
           </span>
         </div>
         <div class="task-title">
@@ -574,6 +592,12 @@ function renderDetailTasks(project) {
             ${esc(item.title)} ↗
           </a>
         </div>
+        ${conditions.length > 0 ? `
+          <div class="task-condition-row">
+            <span class="condition-label">Phụ thuộc:</span>
+            ${conditions.map(c => `<span class="condition-pill font-mono">${esc(c)}</span>`).join(' ')}
+          </div>
+        ` : ''}
         ${renderLifecycleStepper(lc)}
         <div class="task-item-footer">
           <span><b>Loại:</b> ${esc(task.type || 'Chưa định nghĩa')}</span>
@@ -595,6 +619,9 @@ function renderConfigDisplay(project) {
   }
 
   const currentModel = lastStatus?.agy_config?.model || 'gemini-3.8-flash-high';
+  const availableModels = lastStatus?.agy_config?.available_models || [
+    { id: 'gemini-3.8-flash-high', name: 'Gemini 3.8 Flash (High)' }
+  ];
 
   if (currentConfigTab === 'tasks') {
     const tasks = project.task_profile_configs || {};
@@ -623,12 +650,12 @@ function renderConfigDisplay(project) {
                 <div class="step-agent-box">
                   <div class="step-agent-role">⚙️ Executor Agent</div>
                   <div class="step-agent-name">${esc(t.executor_profile || 'Chưa gán')}</div>
-                  <div class="step-agent-model">🤖 Model: <strong>${esc(currentModel)}</strong></div>
+                  <div class="step-agent-model">🤖 Model: <strong>${esc(t.executor_model || currentModel)}</strong></div>
                 </div>
                 <div class="step-agent-box">
                   <div class="step-agent-role">🔍 Reviewer Agent</div>
                   <div class="step-agent-name">${esc(t.reviewer_profile || 'Chưa gán')}</div>
-                  <div class="step-agent-model">🤖 Model: <strong>${esc(currentModel)}</strong></div>
+                  <div class="step-agent-model">🤖 Model: <strong>${esc(t.reviewer_model || currentModel)}</strong></div>
                 </div>
               </div>
             </div>
@@ -648,16 +675,32 @@ function renderConfigDisplay(project) {
         ${agentKeys.map(k => {
           const a = agents[k] || {};
           const instrs = a.instructions || [];
+          const isInherited = a.is_model_inherited !== false;
+          const effectiveModel = a.model || currentModel;
           return `
             <div class="agent-profile-card">
               <div class="agent-card-top">
                 <span class="agent-card-id font-mono">🤖 ${esc(k)}</span>
-                <span class="agent-card-model-badge">Model: ${esc(a.model || currentModel)}</span>
+                <div class="agent-model-select-group">
+                  <label class="agent-model-lbl">Model:</label>
+                  <select class="agent-model-select" onchange="onAgentModelChange(this, '${esc(k)}')">
+                    <option value="" ${isInherited ? 'selected' : ''}>Kế thừa mặc định (${esc(currentModel)})</option>
+                    ${availableModels.map(m => `
+                      <option value="${esc(m.id)}" ${(!isInherited && a.configured_model === m.id) ? 'selected' : ''}>
+                        ${esc(m.name || m.id)}
+                      </option>
+                    `).join('')}
+                  </select>
+                  <span class="agent-model-tag ${isInherited ? 'inherited' : 'custom'}">
+                    ${isInherited ? 'Mặc định' : 'Tùy biến'}
+                  </span>
+                </div>
               </div>
               <div class="agent-meta-row">
                 <span>Vai trò: <strong class="highlight-cyan">${esc(a.role || 'executor')}</strong></span>
                 <span>AGY Agent: <code class="font-mono">${esc(a.agy_agent || 'default')}</code></span>
                 <span>Effort: <strong class="highlight-amber">${esc(a.effort || 'medium')}</strong></span>
+                <span>Áp dụng: <strong class="highlight-purple font-mono">${esc(effectiveModel)}</strong></span>
               </div>
               ${instrs.length > 0 ? `
                 <ul class="agent-instructions-list">
@@ -841,6 +884,27 @@ async function handleAgyModelChange(newModel) {
     showBlock(`Lỗi cấu hình AGY Model: ${err.message}`);
   }
 }
+
+window.onAgentModelChange = async function(selectEl, agentId) {
+  const model = selectEl.value;
+  try {
+    const res = await api('/api/config/agent-model', {
+      method: 'POST',
+      body: JSON.stringify({ agent_id: agentId, model: model })
+    });
+    if (res.ok) {
+      const toast = document.getElementById('modelSaveToast');
+      if (toast) {
+        toast.textContent = `✓ Đã lưu model: ${agentId}`;
+        toast.classList.remove('hidden');
+        setTimeout(() => toast.classList.add('hidden'), 2500);
+      }
+      await refresh();
+    }
+  } catch (err) {
+    showBlock(`Lỗi cấu hình Model cho Agent ${agentId}: ${err.message}`);
+  }
+};
 
 function updateInputCounter() {
   const val = document.getElementById('importInput').value.trim();

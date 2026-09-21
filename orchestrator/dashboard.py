@@ -151,6 +151,19 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 current = self.engine.set_agy_model(model)
                 self._json({"ok": True, "model": current})
                 return
+            if route == "/api/config/agent-model":
+                payload = self._read_json()
+                agent_id = str(payload.get("agent_id") or "").strip()
+                if not agent_id:
+                    raise ValueError("agent_id cannot be empty")
+                model = payload.get("model")
+                if model:
+                    model = str(model).strip()
+                else:
+                    model = None
+                effective = self.engine.set_agent_model(agent_id, model)
+                self._json({"ok": True, "agent_id": agent_id, "effective_model": effective})
+                return
             prefix = "/api/projects/"
             suffix_graphify = "/graphify/update"
             suffix_sync = "/sync"

@@ -51,6 +51,9 @@
           </select>
           <span id="modelSaveToast" class="model-save-toast hidden">✓ Đã lưu</span>
         </div>
+        <div class="status-pill" id="workerBadge" title="Năng lực chạy song song nhiều AGY (ORCH_MAX_WORKERS)">
+          <span class="status-dot"></span> Workers: 0/2
+        </div>
         <div class="status-pill" id="githubBadge">
           <span class="status-dot"></span> GitHub: Kiểm tra…
         </div>
@@ -297,6 +300,7 @@
               <div class="task-filters">
                 <button class="filter-btn active" data-filter="all">Tất cả</button>
                 <button class="filter-btn" data-filter="ready">Chờ xử lý</button>
+                <button class="filter-btn" data-filter="waiting">Chờ Phụ Thuộc</button>
                 <button class="filter-btn" data-filter="in_progress">Đang làm</button>
                 <button class="filter-btn" data-filter="review">Review</button>
                 <button class="filter-btn" data-filter="done">Xong</button>

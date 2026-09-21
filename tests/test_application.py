@@ -38,79 +38,92 @@ class AllInOneApplicationTests(unittest.TestCase):
     def test_worker_waits_for_first_successful_sync(self):
         with tempfile.TemporaryDirectory() as td:
             app = AllInOneApplication(settings_for(td))
-            calls = []
-            app.engine.ensure_labels = lambda: calls.append("labels")
-            app.engine.serve_loop = lambda stop: calls.append("worker")
-            app.engine.github_auth_status = lambda: {"connected": True, "login": "owner"}
+            try:
+                calls = []
+                app.engine.ensure_labels = lambda: calls.append("labels")
+                app.engine.serve_loop = lambda stop: calls.append("worker")
+                app.engine.github_auth_status = lambda: {"connected": True, "login": "owner"}
 
-            thread = threading.Thread(target=app._worker_after_sync)
-            thread.start()
-            self.assertEqual(calls, [])
+                thread = threading.Thread(target=app._worker_after_sync)
+                thread.start()
+                self.assertEqual(calls, [])
 
-            app.projects_ready.set()
-            thread.join(timeout=2)
+                app.projects_ready.set()
+                thread.join(timeout=2)
 
-            self.assertEqual(calls, ["labels", "worker"])
+                self.assertEqual(calls, ["labels", "worker"])
+            finally:
+                app.engine.close()
 
     def test_worker_waits_for_github_connection(self):
         with tempfile.TemporaryDirectory() as td:
             app = AllInOneApplication(settings_for(td))
-            calls = []
-            auth = {"connected": False}
-            app.engine.github_auth_status = lambda: dict(auth)
-            app.engine.ensure_labels = lambda: calls.append("labels")
-            app.engine.serve_loop = lambda stop: calls.append("worker")
-            app.projects_ready.set()
+            try:
+                calls = []
+                auth = {"connected": False}
+                app.engine.github_auth_status = lambda: dict(auth)
+                app.engine.ensure_labels = lambda: calls.append("labels")
+                app.engine.serve_loop = lambda stop: calls.append("worker")
+                app.projects_ready.set()
 
-            thread = threading.Thread(target=app._worker_after_sync)
-            thread.start()
-            threading.Event().wait(0.05)
-            self.assertEqual(calls, [])
+                thread = threading.Thread(target=app._worker_after_sync)
+                thread.start()
+                threading.Event().wait(0.05)
+                self.assertEqual(calls, [])
 
-            auth["connected"] = True
-            thread.join(timeout=2)
-            self.assertEqual(calls, ["labels", "worker"])
+                auth["connected"] = True
+                thread.join(timeout=2)
+                self.assertEqual(calls, ["labels", "worker"])
+            finally:
+                app.engine.close()
 
     def test_self_update_requests_clean_restart_after_fast_forward(self):
         with tempfile.TemporaryDirectory() as td:
             app = AllInOneApplication(settings_for(td))
-            class FakeUpdater:
-                def check_and_apply(self, active_task):
-                    self.active_task = active_task
-                    return {"state":"updated","message":"updated","checked_at":1}
-            updater = FakeUpdater()
-            app.self_updater = updater
-            app.engine.state.get_lease = lambda: None
-            app._self_update_forever()
-            self.assertFalse(updater.active_task)
-            self.assertTrue(app.restart_requested.is_set())
-            self.assertTrue(app.stop.is_set())
+            try:
+                class FakeUpdater:
+                    def check_and_apply(self, active_task):
+                        self.active_task = active_task
+                        return {"state":"updated","message":"updated","checked_at":1}
+                updater = FakeUpdater()
+                app.self_updater = updater
+                app.engine.state.get_lease = lambda: None
+                app._self_update_forever()
+                self.assertFalse(updater.active_task)
+                self.assertTrue(app.restart_requested.is_set())
+                self.assertTrue(app.stop.is_set())
+            finally:
+                app.engine.close()
 
     def test_successful_auto_sync_enables_projects_ready(self):
         with tempfile.TemporaryDirectory() as td:
             app = AllInOneApplication(settings_for(td))
+            try:
+                def sync_projects():
+                    app.stop.set()
+                    return [{"id": "p", "ok": True}]
 
-            def sync_projects():
-                app.stop.set()
-                return [{"id": "p", "ok": True}]
+                app.engine.sync_projects = sync_projects
+                app._sync_forever()
 
-            app.engine.sync_projects = sync_projects
-            app._sync_forever()
-
-            self.assertTrue(app.projects_ready.is_set())
+                self.assertTrue(app.projects_ready.is_set())
+            finally:
+                app.engine.close()
 
     def test_failed_auto_sync_does_not_enable_worker_gate(self):
         with tempfile.TemporaryDirectory() as td:
             app = AllInOneApplication(settings_for(td))
+            try:
+                def sync_projects():
+                    app.stop.set()
+                    return [{"id": "p", "ok": False, "error": "offline"}]
 
-            def sync_projects():
-                app.stop.set()
-                return [{"id": "p", "ok": False, "error": "offline"}]
+                app.engine.sync_projects = sync_projects
+                app._sync_forever()
 
-            app.engine.sync_projects = sync_projects
-            app._sync_forever()
-
-            self.assertFalse(app.projects_ready.is_set())
+                self.assertFalse(app.projects_ready.is_set())
+            finally:
+                app.engine.close()
 
 
 if __name__ == "__main__":

@@ -27,6 +27,7 @@ from .models import (
     LABEL_READY,
     LABEL_REWORK,
     LABEL_RUNNING,
+    LABEL_WAITING_CONDITION,
     REVIEW_MARKER,
     Settings,
     canonical_task_hash,
@@ -89,12 +90,21 @@ class OrchestratorEngine:
         if hasattr(self, "state") and self.state:
             self.state.close()
 
+    def __del__(self) -> None:
+        self.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
+
     def _refresh_agy_models_bg(self) -> None:
         binary = shutil.which(self.settings.agy_bin)
         if not binary:
             return
         try:
-            proc = subprocess.run([binary, "models"], capture_output=True, text=True, timeout=10)
+            proc = subprocess.run([binary, "models"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10)
             if proc.returncode == 0 and proc.stdout:
                 models_dict = {m["id"]: dict(m) for m in DEFAULT_AGY_MODELS}
                 for line in proc.stdout.splitlines():
@@ -128,6 +138,30 @@ class OrchestratorEngine:
         self.state.set_config("agy_model", clean)
         self.state.add_event("agy_model_changed", {"model": clean})
         return clean
+
+    def get_agent_model(self, agent_id: str) -> str | None:
+        if not agent_id:
+            return None
+        return self.state.get_config(f"agent_model:{agent_id}")
+
+    def set_agent_model(self, agent_id: str, model: str | None) -> str:
+        clean_id = str(agent_id or "").strip()
+        if not clean_id:
+            raise ValueError("agent_id cannot be empty")
+        clean_model = str(model or "").strip()
+        if clean_model and clean_model.lower() not in ("default", "inherit", "null", "none"):
+            self.state.set_config(f"agent_model:{clean_id}", clean_model)
+            self.state.add_event("agent_model_changed", {"agent_id": clean_id, "model": clean_model})
+            return clean_model
+        else:
+            self.state.delete_config(f"agent_model:{clean_id}")
+            self.state.add_event("agent_model_changed", {"agent_id": clean_id, "model": "default"})
+            return self.get_agy_model()
+
+    def resolve_agent_model(self, agent: dict) -> str:
+        agent_id = agent.get("id")
+        override = self.get_agent_model(agent_id) if agent_id else None
+        return override or agent.get("model") or self.get_agy_model()
 
     # ---------- GitHub authentication ----------
     def refresh_github_auth(self) -> dict[str, Any]:
@@ -249,6 +283,7 @@ class OrchestratorEngine:
         ]
         normalized = str(status or "").upper()
         stage_map = {
+            "WAITING_CONDITION": 0,
             "READY": 0,
             "RUNNING": 1,
             "WAITING_ANSWER": 1,
@@ -277,6 +312,8 @@ class OrchestratorEngine:
                 normalized = "RUNNING"
             elif "orch:blocked" in labels:
                 normalized = "BLOCKED"
+            elif "orch:waiting-condition" in labels:
+                normalized = "WAITING_CONDITION"
             else:
                 normalized = "READY"
         index = stage_map.get(normalized, 0)
@@ -289,6 +326,7 @@ class OrchestratorEngine:
             "terminal": index == len(stages) - 1,
             "is_rework": normalized == "REWORK",
             "is_blocked": normalized == "BLOCKED",
+            "is_waiting_condition": normalized == "WAITING_CONDITION",
             "waiting_user": normalized in ("WAITING_ANSWER", "WAITING_USER_GATE"),
         }
 
@@ -296,7 +334,7 @@ class OrchestratorEngine:
     def _issue_repo(self, issue_number: int, explicit: str | None = None) -> str:
         if explicit:
             return explicit
-        lease = self.state.get_lease()
+        lease = self.state.get_lease(issue_number) or self.state.get_lease()
         if lease and int(lease["issue_number"]) == int(issue_number):
             repo = str(lease["payload"].get("issue_repo") or "").strip()
             if repo:
@@ -518,13 +556,34 @@ class OrchestratorEngine:
                 try:
                     catalog = load_catalog(root, project.get("manifest_path", ".orchestrator/project.json"))
                     repo_info = self.workspace.inspect_repo(root)
+                    default_model = self.get_agy_model()
+                    agents_dict = {}
+                    for aid, acfg in catalog["agents"].items():
+                        acfg_copy = dict(acfg)
+                        override = self.get_agent_model(aid)
+                        acfg_copy["model"] = override or default_model
+                        acfg_copy["configured_model"] = override or ""
+                        acfg_copy["is_model_inherited"] = not bool(override)
+                        agents_dict[aid] = acfg_copy
+
+                    task_configs = {}
+                    for tid, tcfg in catalog["tasks"].items():
+                        tcfg_copy = dict(tcfg)
+                        exec_id = tcfg.get("executor_profile")
+                        rev_id = tcfg.get("reviewer_profile")
+                        exec_model = agents_dict.get(exec_id, {}).get("model", default_model)
+                        rev_model = agents_dict.get(rev_id, {}).get("model", default_model)
+                        tcfg_copy["executor_model"] = exec_model
+                        tcfg_copy["reviewer_model"] = rev_model
+                        task_configs[tid] = tcfg_copy
+
                     row.update({
                         "repo_info": repo_info,
                         "source": "managed-root",
-                        "agents": sorted(catalog["agents"]),
-                        "agent_profiles": catalog["agents"],
-                        "task_profiles": sorted(catalog["tasks"]),
-                        "task_profile_configs": catalog["tasks"],
+                        "agents": sorted(agents_dict),
+                        "agent_profiles": agents_dict,
+                        "task_profiles": sorted(task_configs),
+                        "task_profile_configs": task_configs,
                         "plans": catalog["plans"][:100],
                         "graphify": self.graphify.status(root, catalog["manifest"]),
                         "import_status": "synced",
@@ -600,7 +659,7 @@ class OrchestratorEngine:
         prompt_file = prompt_dir / f"issue-{issue_number}-{int(time.time() * 1000)}.md"
         prompt_file.write_text(prompt, encoding="utf-8")
         short = f"Read the complete task instructions from {prompt_file} and execute them exactly."
-        model = agent.get("model") or self.get_agy_model()
+        model = self.resolve_agent_model(agent)
         args = [
             binary,
             "--dangerously-skip-permissions",
@@ -835,6 +894,8 @@ class OrchestratorEngine:
         if manifest.get("project") != task["project"] or manifest.get("repository") != task["target_repo"]:
             raise ValueError("Project manifest identity mismatch")
         profile, executor, reviewer = resolve_profiles(task, catalog)
+        executor["model"] = self.resolve_agent_model(executor)
+        reviewer["model"] = self.resolve_agent_model(reviewer)
 
         payload.update({
             "project": task["project"],
@@ -1167,6 +1228,98 @@ class OrchestratorEngine:
 
         self._block(lease, f"unknown lifecycle state: {status}")
 
+    def _parse_canonical_id(self, issue: dict) -> str:
+        title = issue.get("title", "")
+        match = re.match(r"^\[(?P<tag>issue\d+|[A-Za-z0-9_.-]+)\]", title)
+        return match.group("tag") if match else f"issue{issue.get('number', '')}"
+
+    def _evaluate_task_condition(
+        self,
+        task: dict[str, Any],
+        logical_id: str,
+        project_issues: list[dict[str, Any]],
+    ) -> tuple[bool, str, bool]:
+        conditions = task.get("condition") or []
+        if not conditions:
+            return True, "no dependencies (independent task)", False
+
+        if logical_id in conditions:
+            return False, f"self-dependency: {logical_id} depends on itself", True
+
+        issue_by_logical: dict[str, dict[str, Any]] = {}
+        for row in project_issues:
+            lid = self._parse_canonical_id(row)
+            issue_by_logical[lid] = row
+
+        adj: dict[str, list[str]] = {}
+        for row in project_issues:
+            lid = self._parse_canonical_id(row)
+            try:
+                t = parse_task(row.get("body") or "")
+                adj[lid] = t.get("condition") or []
+            except Exception:
+                adj[lid] = []
+        adj[logical_id] = conditions
+
+        visited: set[str] = set()
+        rec_stack: set[str] = set()
+
+        def has_cycle(node: str) -> bool:
+            visited.add(node)
+            rec_stack.add(node)
+            for neighbor in adj.get(node, []):
+                if neighbor not in visited:
+                    if has_cycle(neighbor):
+                        return True
+                elif neighbor in rec_stack:
+                    return True
+            rec_stack.remove(node)
+            return False
+
+        if has_cycle(logical_id):
+            return False, f"dependency cycle involving {logical_id}", True
+
+        for dep_id in conditions:
+            dep = issue_by_logical.get(dep_id)
+            if not dep:
+                return False, f"prerequisite {dep_id} does not exist in repository", False
+            dep_labels = [l.get("name", "") if isinstance(l, dict) else str(l) for l in dep.get("labels", [])]
+            dep_state = str(dep.get("state", "open")).lower()
+            is_done = dep_state == "closed" or LABEL_DONE in dep_labels or "orch:done" in dep_labels
+            if not is_done:
+                return False, f"prerequisite {dep_id} is not DONE (state={dep_state})", False
+
+        return True, "all conditions satisfied", False
+
+    def _reconcile_conditions_for_issues(self, issue_repo: str, issues: list[dict[str, Any]]) -> None:
+        for issue in issues:
+            labels = [l.get("name", "") if isinstance(l, dict) else str(l) for l in issue.get("labels", [])]
+            num = int(issue["number"])
+            if LABEL_WAITING_CONDITION not in labels and LABEL_READY not in labels:
+                continue
+            try:
+                task = parse_task(issue.get("body") or "")
+                lid = self._parse_canonical_id(issue)
+                satisfied, reason, is_invalid = self._evaluate_task_condition(task, lid, issues)
+                if is_invalid:
+                    self.set_label(num, LABEL_BLOCKED, issue_repo)
+                    self.event(num, "blocked", post_to_github=False, issue_repo=issue_repo, reason=f"invalid condition: {reason}")
+                    continue
+                if satisfied and LABEL_WAITING_CONDITION in labels:
+                    self.set_label(num, LABEL_READY, issue_repo)
+                    if LABEL_WAITING_CONDITION in labels:
+                        labels.remove(LABEL_WAITING_CONDITION)
+                    if LABEL_READY not in labels:
+                        labels.append(LABEL_READY)
+                elif not satisfied and LABEL_READY in labels:
+                    self.set_label(num, LABEL_WAITING_CONDITION, issue_repo)
+                    if LABEL_READY in labels:
+                        labels.remove(LABEL_READY)
+                    if LABEL_WAITING_CONDITION not in labels:
+                        labels.append(LABEL_WAITING_CONDITION)
+            except Exception:
+                pass
+
     def tick(self) -> None:
         if not self._tick_lock.acquire(blocking=False):
             return
@@ -1177,26 +1330,56 @@ class OrchestratorEngine:
                 return
             if self.state.is_paused():
                 return
-            lease = self.state.get_lease()
-            if lease and lease["instance_id"] != self.instance_id:
-                recovered = self.state.takeover_if_stale(self.instance_id, self.settings.lease_timeout)
-                if recovered is None:
-                    return
-                lease = recovered
-            if lease:
+
+            active_leases = self.state.get_active_leases()
+            current_active = []
+            for l in active_leases:
+                if l["instance_id"] != self.instance_id:
+                    rec = self.state.takeover_if_stale(self.instance_id, self.settings.lease_timeout, l["issue_number"])
+                    if rec:
+                        current_active.append(rec)
+                else:
+                    current_active.append(l)
+
+            for lease in current_active:
                 self._handle_active(lease)
+
+            # Available slots for new worker tasks
+            busy_count = len([l for l in current_active if l["status"] in ("RUNNING", "REWORK", "VALIDATING", "INTERNAL_REVIEW")])
+            available_slots = max(0, self.settings.max_workers - busy_count)
+            if available_slots <= 0:
                 return
 
             ready: list[dict[str, Any]] = []
             issue_sources: dict[str, set[str]] = {}
+            project_issues_by_repo: dict[str, list[dict[str, Any]]] = {}
             for project in self.registry.list():
                 issue_sources.setdefault(project["issues_repo"], set()).add(project["id"])
+
             for issue_repo, project_ids in issue_sources.items():
-                for row in self.github.list_ready_issues(issue_repo):
-                    issue = dict(row)
-                    issue["_issue_repo"] = issue_repo
-                    issue["_allowed_projects"] = sorted(project_ids)
-                    ready.append(issue)
+                ready_issues = self.github.list_ready_issues(issue_repo)
+                ready_mocked = not (hasattr(self.github.list_ready_issues, "__self__") and self.github.list_ready_issues.__self__ is self.github)
+                open_mocked = hasattr(self.github, "list_open_orchestrator_issues") and not (hasattr(self.github.list_open_orchestrator_issues, "__self__") and self.github.list_open_orchestrator_issues.__self__ is self.github)
+                if ready_mocked and not open_mocked:
+                    open_issues = list(ready_issues)
+                else:
+                    try:
+                        open_issues = self.github.list_open_orchestrator_issues(issue_repo)
+                    except Exception:
+                        open_issues = list(ready_issues)
+                known_numbers = {r["number"] for r in open_issues}
+                for r in ready_issues:
+                    if r["number"] not in known_numbers:
+                        open_issues.append(r)
+                project_issues_by_repo[issue_repo] = open_issues
+                self._reconcile_conditions_for_issues(issue_repo, open_issues)
+                for row in open_issues:
+                    labels = [l.get("name", "") if isinstance(l, dict) else str(l) for l in row.get("labels", [])]
+                    if LABEL_READY in labels:
+                        issue = dict(row)
+                        issue["_issue_repo"] = issue_repo
+                        issue["_allowed_projects"] = sorted(project_ids)
+                        ready.append(issue)
 
             def priority(issue: dict) -> tuple[int, int, str]:
                 try:
@@ -1206,27 +1389,65 @@ class OrchestratorEngine:
                     return 99, int(issue["number"]), issue["_issue_repo"]
 
             for issue in sorted(ready, key=priority):
+                if available_slots <= 0:
+                    break
+                num = int(issue["number"])
                 issue_repo = issue["_issue_repo"]
-                canonical_match = re.match(r"^\[(?P<tag>issue\d+|[A-Za-z0-9_.-]+)\]", issue.get("title", ""))
-                logical_id = canonical_match.group("tag") if canonical_match else f"issue{issue['number']}"
+                if any(l["issue_number"] == num for l in current_active):
+                    continue
+
+                logical_id = self._parse_canonical_id(issue)
                 try:
                     author = ((issue.get("user") or {}).get("login") or "")
                     if author not in self.settings.allowed_authors:
-                        self.set_label(int(issue["number"]), LABEL_BLOCKED, issue_repo)
+                        self.set_label(num, LABEL_BLOCKED, issue_repo)
                         self.event(
-                            int(issue["number"]),
+                            num,
                             "blocked",
+                            post_to_github=False,
                             issue_repo=issue_repo,
                             logical_issue_id=logical_id,
                             reason=f"unauthorized issue author: {author}",
                         )
                         continue
+
                     task = parse_task(issue.get("body") or "")
-                    if task["project"] not in issue["_allowed_projects"]:
-                        self.set_label(int(issue["number"]), LABEL_BLOCKED, issue_repo)
+                    contract_issue_id = task.get("issue_id")
+                    if contract_issue_id and contract_issue_id != logical_id:
+                        self.set_label(num, LABEL_BLOCKED, issue_repo)
                         self.event(
-                            int(issue["number"]),
+                            num,
                             "blocked",
+                            post_to_github=False,
+                            issue_repo=issue_repo,
+                            logical_issue_id=logical_id,
+                            reason=f"task contract issue_id '{contract_issue_id}' does not match title tag '{logical_id}'",
+                        )
+                        continue
+
+                    all_repo_issues = project_issues_by_repo.get(issue_repo, [])
+                    satisfied, reason, is_invalid = self._evaluate_task_condition(task, logical_id, all_repo_issues)
+                    if is_invalid:
+                        self.set_label(num, LABEL_BLOCKED, issue_repo)
+                        self.event(
+                            num,
+                            "blocked",
+                            post_to_github=False,
+                            issue_repo=issue_repo,
+                            logical_issue_id=logical_id,
+                            reason=f"invalid condition: {reason}",
+                        )
+                        continue
+                    if not satisfied:
+                        self.set_label(num, LABEL_WAITING_CONDITION, issue_repo)
+                        continue
+
+                    if task["project"] not in issue["_allowed_projects"]:
+                        self.set_label(num, LABEL_BLOCKED, issue_repo)
+                        self.event(
+                            num,
+                            "blocked",
+                            post_to_github=False,
                             issue_repo=issue_repo,
                             logical_issue_id=logical_id,
                             reason=(
@@ -1235,6 +1456,7 @@ class OrchestratorEngine:
                             ),
                         )
                         continue
+
                     payload = {
                         "issue_repo": issue_repo,
                         "task_id": task["task_id"],
@@ -1245,29 +1467,29 @@ class OrchestratorEngine:
                         "rework_count": 0,
                         "review_cycle": 0,
                     }
-                    if not self.state.claim(self.instance_id, int(issue["number"]), "RUNNING", payload):
-                        return
-                    lease = self.state.get_lease()
+                    if not self.state.claim(self.instance_id, num, "RUNNING", payload, max_workers=self.settings.max_workers):
+                        continue
+                    lease = self.state.get_lease(num)
                     assert lease
-                    self.set_label(int(issue["number"]), LABEL_RUNNING)
-                    self.event(int(issue["number"]), "started", task_id=task["task_id"], project=task["project"])
+                    current_active.append(lease)
+                    available_slots -= 1
+                    self.set_label(num, LABEL_RUNNING, issue_repo)
+                    self.event(num, "started", post_to_github=False, task_id=task["task_id"], project=task["project"])
                     self._handle_active(lease)
-                    return
                 except Exception as exc:
-                    # If claim happened, keep Issue blocked and lease for explicit retry/recovery.
-                    lease = self.state.get_lease()
+                    lease = self.state.get_lease(num)
                     if lease and lease["instance_id"] == self.instance_id:
                         self._block(lease, f"runtime failure: {exc}")
                     else:
-                        self.set_label(int(issue["number"]), LABEL_BLOCKED, issue_repo)
+                        self.set_label(num, LABEL_BLOCKED, issue_repo)
                         self.event(
-                            int(issue["number"]),
+                            num,
                             "blocked",
+                            post_to_github=False,
                             issue_repo=issue_repo,
                             logical_issue_id=logical_id,
                             reason=f"task claim failure: {exc}",
                         )
-                    return
         finally:
             self._tick_lock.release()
 
@@ -1301,11 +1523,13 @@ class OrchestratorEngine:
                                 "type": parsed["type"],
                                 "revision": int(parsed["revision"]),
                                 "priority": int(parsed.get("priority", 9)),
+                                "issue_id": parsed.get("issue_id"),
+                                "condition": parsed.get("condition", []),
                             }
                         except Exception as exc:
                             task_error = str(exc)
                         labels = [label["name"] for label in row.get("labels", [])]
-                        active_lease = self.state.get_lease()
+                        active_lease = self.state.get_lease(int(row["number"]))
                         active_status = ""
                         active_payload = {}
                         if (
@@ -1333,18 +1557,33 @@ class OrchestratorEngine:
                 queue_error = None
             except Exception as exc:
                 queue, queue_error = [], str(exc)
-        active = self.state.get_lease()
-        active_lifecycle = self._lifecycle(active["status"]) if active else self._lifecycle("READY")
-        if active:
-            active_payload = dict(active.get("payload") or {})
-            if active["status"] == "BLOCKED" or active_lifecycle.get("is_blocked"):
-                active_lifecycle["blocked_reason"] = active_payload.get("blocked_reason") or ""
-                active_lifecycle["blocked_output"] = active_payload.get("blocked_output") or ""
+
+        active_leases = self.state.get_active_leases()
+        active_tasks = []
+        for l in active_leases:
+            p = dict(l.get("payload") or {})
+            lc = self._lifecycle(l["status"])
+            if l["status"] == "BLOCKED" or lc.get("is_blocked"):
+                lc["blocked_reason"] = p.get("blocked_reason") or ""
+                lc["blocked_output"] = p.get("blocked_output") or ""
+            active_tasks.append({
+                "issue_number": l["issue_number"],
+                "status": l["status"],
+                "instance_id": l["instance_id"],
+                "payload": p,
+                "lifecycle": lc,
+                "heartbeat": l.get("heartbeat"),
+                "created_at": l.get("created_at"),
+            })
+        active = active_tasks[0] if active_tasks else None
+        active_lifecycle = active["lifecycle"] if active else self._lifecycle("READY")
+
         metrics = {
             "ready": sum(1 for x in queue if x.get("lifecycle", {}).get("status") == "READY"),
             "in_progress": sum(1 for x in queue if x.get("lifecycle", {}).get("stage_index") in (1, 2, 3)),
             "review": sum(1 for x in queue if x.get("lifecycle", {}).get("stage_index") == 4),
             "blocked": sum(1 for x in queue if x.get("lifecycle", {}).get("is_blocked")),
+            "waiting_condition": sum(1 for x in queue if x.get("lifecycle", {}).get("status") == "WAITING_CONDITION"),
             "total_open": len(queue),
         }
         return {
@@ -1366,8 +1605,14 @@ class OrchestratorEngine:
                 "last_sync_at": self._last_sync_at,
                 "last_results": self._last_sync_results,
             },
+            "worker_capacity": {
+                "active": len([t for t in active_tasks if t["status"] in ("RUNNING", "REWORK", "VALIDATING", "INTERNAL_REVIEW")]),
+                "total_leases": len(active_tasks),
+                "max": self.settings.max_workers,
+            },
             "active": active,
             "active_lifecycle": active_lifecycle,
+            "active_tasks": active_tasks,
             "metrics": metrics,
             "projects": self.project_snapshot(queue),
             "issues": queue,

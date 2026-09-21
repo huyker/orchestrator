@@ -14,6 +14,7 @@ EVENT_MARKER = "@@ORCH_EVENT@@ "
 REVIEW_MARKER = "@@ORCH_REVIEW@@ "
 
 LABEL_READY = "orch:ready"
+LABEL_WAITING_CONDITION = "orch:waiting-condition"
 LABEL_RUNNING = "orch:running"
 LABEL_QUESTION = "orch:question"
 LABEL_GATE = "orch:user-gate"
@@ -25,6 +26,7 @@ LABEL_BLOCKED = "orch:blocked"
 
 ALL_LABELS = {
     LABEL_READY,
+    LABEL_WAITING_CONDITION,
     LABEL_RUNNING,
     LABEL_QUESTION,
     LABEL_GATE,
@@ -54,6 +56,7 @@ class Settings:
     dashboard_port: int
     allowed_authors: tuple[str, ...]
     agy_model: str = "gemini-3.8-flash-high"
+    max_workers: int = 2
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -86,6 +89,7 @@ class Settings:
             )
 
         agy_model = os.getenv("ORCH_AGY_MODEL", "gemini-3.8-flash-high").strip() or "gemini-3.8-flash-high"
+        max_workers = max(1, int(os.getenv("ORCH_MAX_WORKERS", "2")))
 
         return cls(
             control_repo=control_repo,
@@ -104,6 +108,7 @@ class Settings:
             dashboard_port=int(os.getenv("ORCH_DASHBOARD_PORT", "8766")),
             allowed_authors=tuple(x.strip() for x in raw_authors.split(",") if x.strip()),
             agy_model=agy_model,
+            max_workers=max_workers,
         )
 
 
@@ -120,6 +125,19 @@ def parse_task(body: str) -> dict[str, Any]:
         raise ValueError("Unsupported task schema_version")
     if int(task["revision"]) < 1:
         raise ValueError("revision must be >= 1")
+
+    # condition list validation
+    raw_condition = task.get("condition")
+    if raw_condition is None:
+        task["condition"] = []
+    elif isinstance(raw_condition, list):
+        task["condition"] = [str(c).strip() for c in raw_condition if str(c).strip()]
+    else:
+        raise ValueError("condition must be a list of logical issue IDs")
+
+    if "issue_id" in task and task["issue_id"] is not None:
+        task["issue_id"] = str(task["issue_id"]).strip()
+
     return task
 
 

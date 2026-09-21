@@ -1880,6 +1880,106 @@ body {
   color: var(--accent-cyan);
 }
 
+/* Agent Model Selector */
+.agent-model-select-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.agent-model-lbl {
+  font-size: 0.76rem;
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
+.agent-model-select {
+  background: var(--bg-surface-elevated, #161b22);
+  color: var(--accent-cyan, #58a6ff);
+  border: 1px solid rgba(88, 166, 255, 0.3);
+  border-radius: var(--radius-sm, 6px);
+  padding: 3px 8px;
+  font-size: 0.78rem;
+  font-family: var(--font-mono, monospace);
+  outline: none;
+  cursor: pointer;
+  max-width: 280px;
+  transition: border-color 0.2s;
+}
+
+.agent-model-select:focus {
+  border-color: var(--accent-purple, #a855f7);
+  box-shadow: 0 0 0 2px rgba(168, 85, 247, 0.2);
+}
+
+.agent-model-tag {
+  font-size: 0.7rem;
+  padding: 2px 7px;
+  border-radius: var(--radius-pill, 9999px);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.agent-model-tag.inherited {
+  background: rgba(56, 189, 248, 0.12);
+  color: #38bdf8;
+  border: 1px solid rgba(56, 189, 248, 0.25);
+}
+
+.agent-model-tag.custom {
+  background: rgba(245, 158, 11, 0.15);
+  color: #fbbf24;
+  border: 1px solid rgba(245, 158, 11, 0.35);
+}
+
+/* Multi-task hero container */
+.active-tasks-container {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin-bottom: 24px;
+}
+
+/* Task conditions */
+.task-condition-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  margin-bottom: 4px;
+  flex-wrap: wrap;
+}
+
+.condition-label {
+  font-size: 0.74rem;
+  color: var(--accent-amber, #fbbf24);
+  font-weight: 600;
+}
+
+.condition-pill {
+  font-size: 0.72rem;
+  background: rgba(245, 158, 11, 0.12);
+  color: #fbbf24;
+  border: 1px solid rgba(245, 158, 11, 0.3);
+  padding: 1px 6px;
+  border-radius: 4px;
+}
+
+.task-state-badge.waiting {
+  background: rgba(245, 158, 11, 0.15);
+  color: #fbbf24;
+  border: 1px solid rgba(245, 158, 11, 0.3);
+}
+
+/* Worker badge */
+#workerBadge {
+  color: var(--accent-purple, #c084fc);
+  border-color: rgba(192, 132, 252, 0.3);
+  background: rgba(192, 132, 252, 0.08);
+}
+
 /* ================= RESPONSIVE ================= */
 @media (max-width: 1200px) {
   .metrics-grid {
