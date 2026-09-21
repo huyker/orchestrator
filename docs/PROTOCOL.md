@@ -1,5 +1,7 @@
 # GitHub Issue Protocol v1
 
+> Detailed ChatGPT ↔ Orchestrator ↔ AGY messaging, event naming, sync/reconciliation, `/review`, and rework protocol: [`CHATGPT_AGY_COMMUNICATION_PROTOCOL.md`](./CHATGPT_AGY_COMMUNICATION_PROTOCOL.md).
+
 For **managed projects**, GitHub Issue is the task/message source of truth. Each managed project owns its Issue queue via `projects.json -> issues_repo`; project repositories store plans/rules/agent profiles/source code, but **not active task transport/state files in source branches**.
 
 This protocol does not govern development of `huyker/orchestrator` itself. Orchestrator code changes are implemented/reviewed/merged directly without creating runtime task Issues.
