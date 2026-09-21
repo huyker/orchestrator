@@ -310,15 +310,15 @@ The Issue includes a gate, for example:
 ]
 ```
 
-Local generates only gate-stage artifacts, computes their digest, then posts `user_gate_required` to the Issue.
+Local generates only gate-stage artifacts, computes their digest, commits/pushes those concept artifacts to the same task branch/PR, then posts `user_gate_required` with the PR URL and exact PR head SHA to the Issue. This keeps concept review 100% visible through GitHub.
 
-Approval must match the exact gate id + digest:
+Approval must match the exact gate id + digest + concept PR head:
 
 ```orchestrator-command
-{"command":"approve_gate","revision":1,"gate_id":"asset-concept","artifact_digest":"<sha256>"}
+{"command":"approve_gate","revision":1,"gate_id":"asset-concept","artifact_digest":"<sha256>","pr_head_sha":"<exact concept head sha>"}
 ```
 
-No matching approval = no post-gate production.
+If the PR head changes, the pending gate is invalidated. No matching approval = no post-gate production.
 
 ---
 
