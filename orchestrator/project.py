@@ -15,150 +15,26 @@ _GITHUB_PATTERNS = (
 )
 
 
-def github_repo_from_source(source: str) -> tuple[str, str | None]:
-    """Return (owner/repo, local_path) from owner/repo, GitHub URL, or local git checkout."""
+def github_repo_from_source(source: str) -> tuple[str, None]:
+    """Return owner/repo from a GitHub URL, SSH URL, or owner/repo shorthand."""
     raw = str(source or "").strip().strip('"')
     if not raw:
-        raise ValueError("Git project path / URL is required")
+        raise ValueError("GitHub repository URL is required")
 
     for pattern in _GITHUB_PATTERNS:
         match = pattern.match(raw)
         if match:
             return match.group("repo").removesuffix(".git"), None
 
-    candidate = Path(raw).expanduser()
-    if candidate.exists() and candidate.is_dir():
-        top_proc = subprocess.run(
-            ["git", "rev-parse", "--show-toplevel"],
-            cwd=candidate,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            timeout=10,
-        )
-        if top_proc.returncode:
-            raise ValueError(f"Local path is not inside a git repository: {candidate}")
-        git_root = Path(top_proc.stdout.strip()).resolve()
-        proc = subprocess.run(
-            ["git", "remote", "get-url", "origin"],
-            cwd=git_root,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            timeout=10,
-        )
-        if proc.returncode:
-            raise ValueError(f"Cannot read git origin from {git_root}: {proc.stdout.strip()}")
-        remote = proc.stdout.strip()
-        for pattern in _GITHUB_PATTERNS:
-            match = pattern.match(remote)
-            if match:
-                return match.group("repo").removesuffix(".git"), str(git_root)
-        raise ValueError(
-            "Local project origin is not a GitHub repository. "
-            "Managed Issue/PR transport currently requires GitHub."
-        )
-
     raise ValueError(
-        "Unsupported project source. Use a local git path, owner/repo, "
+        "Unsupported GitHub repository. Use owner/repo, "
         "git@github.com:owner/repo.git, or https://github.com/owner/repo.git"
     )
-
 
 def default_project_id(repo: str) -> str:
     name = repo.split("/", 1)[-1]
     slug = re.sub(r"[^a-zA-Z0-9._-]+", "-", name).strip("-").lower()
     return slug or "project"
-
-
-def inspect_project_source(
-    source: str,
-    manifest_path: str = ".orchestrator/project.json",
-) -> dict[str, Any]:
-    repo, local_path = github_repo_from_source(source)
-    result: dict[str, Any] = {
-        "repo": repo,
-        "issues_repo": repo,
-        "project_id": default_project_id(repo),
-        "default_branch": "main",
-        "source_path": local_path,
-        "local": bool(local_path),
-        "manifest_path": manifest_path,
-        "manifest_exists": False,
-    }
-    if not local_path:
-        return result
-
-    root = Path(local_path)
-    commands = {
-        "git_root": ["git", "rev-parse", "--show-toplevel"],
-        "git_dir": ["git", "rev-parse", "--git-dir"],
-        "head": ["git", "rev-parse", "HEAD"],
-    }
-    for key, command in commands.items():
-        proc = subprocess.run(
-            command,
-            cwd=root,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            timeout=10,
-        )
-        if proc.returncode:
-            raise ValueError(f"Cannot inspect {key} for {root}: {proc.stdout.strip()}")
-        value = proc.stdout.strip()
-        if key == "git_dir":
-            path = Path(value)
-            if not path.is_absolute():
-                path = (root / path).resolve()
-            value = str(path)
-        result[key] = value
-
-    branch_proc = subprocess.run(
-        ["git", "symbolic-ref", "--quiet", "--short", "HEAD"],
-        cwd=root,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-        timeout=10,
-    )
-    if branch_proc.returncode == 0 and branch_proc.stdout.strip():
-        result["branch"] = branch_proc.stdout.strip()
-        result["default_branch"] = branch_proc.stdout.strip()
-    else:
-        result["branch"] = "(detached)"
-
-    status_proc = subprocess.run(
-        ["git", "status", "--porcelain"],
-        cwd=root,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        timeout=10,
-    )
-    result["dirty"] = bool(status_proc.stdout.strip()) if status_proc.returncode == 0 else None
-
-    manifest_file = root / manifest_path
-    if manifest_file.is_file():
-        result["manifest_exists"] = True
-        try:
-            manifest = json.loads(manifest_file.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
-            result["manifest_error"] = str(exc)
-        else:
-            project_id = str(manifest.get("project") or "").strip()
-            manifest_repo = str(manifest.get("repository") or "").strip()
-            if manifest_repo and manifest_repo != repo:
-                result["manifest_repo_mismatch"] = {
-                    "manifest": manifest_repo,
-                    "origin": repo,
-                }
-            if project_id:
-                result["project_id"] = project_id
-            if manifest_repo:
-                result["manifest_repository"] = manifest_repo
-
-    return result
 
 
 class Registry:
@@ -199,22 +75,8 @@ class Registry:
         default_branch: str = "main",
         manifest_path: str = ".orchestrator/project.json",
     ) -> dict[str, Any]:
-        repo, local_path = github_repo_from_source(source)
-        manifest_hint: dict[str, Any] = {}
-        if local_path:
-            hint_file = Path(local_path) / manifest_path
-            if hint_file.is_file():
-                try:
-                    manifest_hint = json.loads(hint_file.read_text(encoding="utf-8"))
-                except (OSError, json.JSONDecodeError):
-                    manifest_hint = {}
-        hinted_id = str(manifest_hint.get("project") or "").strip()
-        hinted_repo = str(manifest_hint.get("repository") or "").strip()
-        if hinted_repo and hinted_repo != repo:
-            raise ValueError(
-                f"Local project manifest repository {hinted_repo} does not match git origin {repo}"
-            )
-        pid = (project_id or hinted_id or default_project_id(repo)).strip()
+        repo, _ = github_repo_from_source(source)
+        pid = (project_id or default_project_id(repo)).strip()
         if not re.fullmatch(r"[A-Za-z0-9._-]+", pid):
             raise ValueError("Project ID may contain only letters, numbers, dot, underscore and dash")
         if pid in self.projects:
@@ -232,8 +94,6 @@ class Registry:
             "manifest_path": (manifest_path or ".orchestrator/project.json").strip(),
             "enabled": True,
         }
-        if local_path:
-            entry["source_path"] = local_path
         raw.setdefault("projects", []).append(entry)
         tmp = self.path.with_suffix(self.path.suffix + ".tmp")
         tmp.write_text(json.dumps(raw, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
