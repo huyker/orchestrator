@@ -82,6 +82,39 @@ python app.py
 
 No package installation is required for the orchestrator itself; it uses the Python standard library.
 
+## Dashboard
+
+The dashboard UI is based on the earlier Gemini/AGY control-plane dashboard from the GameFi GitLab workflow, adapted to the new GitHub-Issue architecture.
+
+It includes:
+
+- dark glass / cyan-purple control-plane visual language;
+- overview metric cards;
+- live runtime telemetry and event stream;
+- managed-project list and project context panel;
+- task cards rendered from GitHub Issues;
+- six-stage lifecycle visualization:
+  `Ready → Implement → Validate → QA → GPT Review → Done`;
+- progress %, rework, blocked, user-gate and external-review callouts;
+- **Add Project** modal.
+
+### Add another managed Git project
+
+Click **Add Project** in the dashboard and enter any of:
+
+```text
+E:\Game studio\another-project
+git@github.com:owner/repo.git
+https://github.com/owner/repo.git
+owner/repo
+```
+
+For a local path, the app reads `git remote get-url origin` to identify the GitHub repository. It does **not** reset or use your working checkout as the orchestrator task workspace; task work continues in the orchestrator-managed isolated clone/worktree.
+
+If the local repository already has `.orchestrator/project.json`, its project ID is automatically detected. Otherwise you can enter a Project ID in the modal.
+
+The registry is persisted to `projects.json` and the all-in-one app picks it up on the next automatic sync without restart.
+
 ## Automatic sync
 
 The app continuously fetches registered projects. Default interval:
