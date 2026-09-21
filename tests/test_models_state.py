@@ -36,6 +36,22 @@ class ModelsStateTests(unittest.TestCase):
             self.assertEqual(settings.control_repo, "")
             self.assertEqual(settings.allowed_authors, ("huyker",))
 
+    def test_settings_allow_dashboard_start_without_github_token(self):
+        with tempfile.TemporaryDirectory() as td:
+            registry = Path(td) / "projects.json"
+            registry.write_text(json.dumps({
+                "schema_version": 1,
+                "projects": [{"id": "gamegit", "repo": "huyker/game", "issues_repo": "huyker/game"}]
+            }))
+            with patch("orchestrator.models.discover_github_token", return_value=""), patch.dict(os.environ, {
+                "ORCH_PROJECT_REGISTRY": str(registry),
+                "ORCH_RUNTIME_DIR": str(Path(td) / "runtime"),
+                "ORCH_WORKSPACE_ROOT": str(Path(td) / "repos"),
+            }, clear=True):
+                settings = Settings.from_env()
+            self.assertEqual(settings.token, "")
+            self.assertEqual(settings.allowed_authors, ("huyker",))
+
     def test_parse_exactly_one_task_block(self):
         body = '```orchestrator-task\n{"schema_version":1,"revision":1,"task_id":"T1","project":"p","type":"code","title":"x","objective":"y"}\n```'
         self.assertEqual(parse_task(body)["task_id"], "T1")
