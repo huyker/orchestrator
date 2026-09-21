@@ -464,6 +464,24 @@ class OrchestratorEngine:
                 self._block(lease, f"user gate {pending_gate['id']} produced no changed artifacts")
                 return
             artifact_digest = self.workspace.artifact_digest(worktree, task["base_branch"])
+            gate_head_sha = self.workspace.commit_push(
+                worktree,
+                branch,
+                f"gate({task['task_id']}): {pending_gate['id']} concept for issue #{issue_number}",
+            )
+            pr = self.github.find_open_pr(task["target_repo"], branch, task["base_branch"])
+            if not pr:
+                pr = self.github.create_pr(
+                    task["target_repo"],
+                    f"{task['task_id']}: {task['title']}",
+                    (
+                        f"Implements {self.settings.control_repo}#{issue_number}.\n\n"
+                        f"Currently waiting for user gate `{pending_gate['id']}`. "
+                        "The Issue remains the approval/source-of-truth thread."
+                    ),
+                    branch,
+                    task["base_branch"],
+                )
             comment_id = self.event(
                 issue_number,
                 "user_gate_required",
@@ -471,10 +489,15 @@ class OrchestratorEngine:
                 message=pending_gate.get("message", "User approval required"),
                 artifact_digest=artifact_digest,
                 changed_files=changed,
+                pr_url=pr["html_url"],
+                pr_number=pr["number"],
+                pr_head_sha=gate_head_sha,
             )
             payload.update({
+                "pr_number": pr["number"],
                 "pending_gate_id": pending_gate["id"],
                 "pending_gate_digest": artifact_digest,
+                "pending_gate_pr_head_sha": gate_head_sha,
                 "command_after_comment_id": comment_id,
             })
             self.state.update_lease(self.instance_id, status="WAITING_USER_GATE", payload=payload)
@@ -591,21 +614,54 @@ class OrchestratorEngine:
         if status == "WAITING_USER_GATE":
             gate_id = payload.get("pending_gate_id")
             artifact_digest = payload.get("pending_gate_digest")
+            expected_head = payload.get("pending_gate_pr_head_sha")
+            pr_number = payload.get("pr_number")
+            if pr_number and expected_head:
+                pr = self.github.get_pr(payload["target_repo"], int(pr_number))
+                actual_head = ((pr.get("head") or {}).get("sha") or "")
+                if actual_head and actual_head != expected_head:
+                    self.event(
+                        issue_number,
+                        "user_gate_artifact_changed",
+                        gate_id=gate_id,
+                        previous_pr_head_sha=expected_head,
+                        current_pr_head_sha=actual_head,
+                    )
+                    payload.pop("pending_gate_id", None)
+                    payload.pop("pending_gate_digest", None)
+                    payload.pop("pending_gate_pr_head_sha", None)
+                    self.state.update_lease(self.instance_id, status="REWORK", payload=payload)
+                    self.set_label(issue_number, LABEL_REWORK)
+                    return
             found = self._find_command(
                 comments,
                 issue_number,
                 "approve_gate",
                 revision,
                 after_comment_id=after,
-                predicate=lambda cmd: cmd.get("gate_id") == gate_id and cmd.get("artifact_digest") == artifact_digest,
+                predicate=lambda cmd: (
+                    cmd.get("gate_id") == gate_id
+                    and cmd.get("artifact_digest") == artifact_digest
+                    and cmd.get("pr_head_sha") == expected_head
+                ),
             )
             if found:
                 approved = dict(payload.get("approved_gates", {}))
-                approved[gate_id] = artifact_digest
+                approved[gate_id] = {
+                    "artifact_digest": artifact_digest,
+                    "pr_head_sha": expected_head,
+                }
                 payload["approved_gates"] = approved
                 payload.pop("pending_gate_id", None)
                 payload.pop("pending_gate_digest", None)
-                self.event(issue_number, "user_gate_approved", gate_id=gate_id, artifact_digest=artifact_digest)
+                payload.pop("pending_gate_pr_head_sha", None)
+                self.event(
+                    issue_number,
+                    "user_gate_approved",
+                    gate_id=gate_id,
+                    artifact_digest=artifact_digest,
+                    pr_head_sha=expected_head,
+                )
                 self.state.update_lease(self.instance_id, status="REWORK", payload=payload)
                 self.set_label(issue_number, LABEL_REWORK)
             return
