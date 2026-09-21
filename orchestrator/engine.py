@@ -241,21 +241,44 @@ class OrchestratorEngine:
 
     def event(self, issue: int, event_type: str, *, issue_repo: str | None = None, **payload: Any) -> int:
         repo = self._issue_repo(issue, issue_repo)
+        logical_issue = f"issue{issue}"
+        lease = self.state.get_lease()
+        if lease and int(lease.get("issue_number", 0)) == int(issue):
+            logical_issue = lease.get("payload", {}).get("logical_issue_id") or logical_issue
+
+        actor = "ORCH"
+        spec_event = event_type
+        if event_type in ("started", "task_started"):
+            actor = "AGY"
+            spec_event = "started"
+        elif event_type in ("ready_for_gpt_review", "fixdone"):
+            actor = "AGY"
+            spec_event = "fixdone"
+        elif event_type == "question":
+            actor = "AGY"
+            spec_event = "question"
+        elif event_type == "blocked":
+            actor = "AGY"
+            spec_event = "blocked"
+        elif event_type in ("done", "complete"):
+            actor = "ORCH"
+            spec_event = "done"
+
         body = {
             "schema_version": 1,
             "schema": "orch.event.v1",
-            "event_id": f"issue{issue}-{event_type}-{int(time.time())}",
-            "issue_id": f"issue{issue}",
-            "event": event_type,
+            "event_id": f"{logical_issue}-{spec_event}-{int(time.time() * 1000)}",
+            "issue_id": logical_issue,
+            "event": spec_event,
             "type": event_type,
-            "actor": "ORCH",
+            "actor": actor,
             "instance_id": self.instance_id,
             "issue_repo": repo,
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             **payload,
         }
         self.state.add_event(event_type, {"issue_repo": repo, "issue_number": issue, **payload})
-        header = f"[issue{issue}_{event_type}_byORCH]"
+        header = f"[{logical_issue}_{spec_event}_by{actor}]"
         comment_body = f"{header}\n\n```orchestrator-event\n" + json.dumps(body, ensure_ascii=False, indent=2) + "\n```"
         created = self.github.comment(
             repo,
@@ -1092,9 +1115,12 @@ class OrchestratorEngine:
                             ),
                         )
                         continue
+                    canonical_match = re.match(r"^\[(?P<tag>issue\d+|[A-Za-z0-9_.-]+)\]", issue.get("title", ""))
+                    logical_id = canonical_match.group("tag") if canonical_match else f"issue{issue['number']}"
                     payload = {
                         "issue_repo": issue_repo,
                         "task_id": task["task_id"],
+                        "logical_issue_id": logical_id,
                         "revision": int(task["revision"]),
                         "contract_hash": canonical_task_hash(task),
                         "approved_gates": {},
