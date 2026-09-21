@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Issue Orchestrator</title>
+  <title>Orchestrator Control Center</title>
   <style>
     :root { font-family: Inter, ui-sans-serif, system-ui, sans-serif; color-scheme: dark; }
     body { margin:0; background:#0d1117; color:#e6edf3; }
@@ -28,17 +28,16 @@
 </head>
 <body>
 <header>
-  <div><h1>Issue Orchestrator</h1><div class="muted">Project Issue → local agents → project PR → GPT review</div></div>
+  <div><h1>Orchestrator Control Center</h1><div class="muted">Auto-sync projects · local agents · GitHub Issues · PR review</div></div>
   <div id="runtime" class="badge">loading…</div>
 </header>
 <main>
   <div class="toolbar">
     <button onclick="act('resume')">Start / Resume</button>
     <button onclick="act('pause')">Pause</button>
-    <button onclick="act('once')">Process once</button>
-    <button onclick="act('sync')">Sync projects</button>
-    <button onclick="act('retry')">Retry via Issue</button>
+    <button onclick="act('retry')">Retry active task via Issue</button>
     <button onclick="refresh()">Refresh</button>
+    <span id="syncState" class="badge">auto sync: waiting</span>
     <span class="muted">Project:</span>
     <select id="projectSelect" onchange="renderSelectedProject()"></select>
   </div>
@@ -64,11 +63,6 @@ async function act(name) {
   try { const j=await api('/api/control/'+name,{method:'POST'}); toast.textContent=j.message||('Done: '+name); await refresh(); }
   catch(e){ toast.textContent='Error: '+e.message; }
 }
-async function graphify(id){
-  const toast=document.getElementById('toast');
-  try { await api('/api/projects/'+encodeURIComponent(id)+'/graphify/update',{method:'POST'}); toast.textContent='Graphify updated: '+id; await refresh(); }
-  catch(e){ toast.textContent='Graphify error: '+e.message; }
-}
 function renderActive(a){
   if(!a) return '<span class="muted">No active task</span>';
   const repo=a.payload?.issue_repo||'';
@@ -80,7 +74,6 @@ function renderProjects(rows){
     <span class="badge">${p.synced?'synced':'not synced'}</span>
     <span class="badge">Issues: ${esc(p.issues_repo||p.repo)}</span>
     <span class="badge">Graphify: ${g.enabled?(g.cli_available?(g.graph_exists?'ready':'no graph'):'CLI missing'):'off'}</span>
-    ${g.enabled?`<button onclick="graphify('${esc(p.id)}')">Update graph</button>`:''}
     <div class="muted">Agents: ${esc((p.agents||[]).join(', ')||'—')}</div>
     <div class="muted">Task profiles: ${esc((p.task_profiles||[]).join(', ')||'—')}</div>
     ${p.error?`<div class="bad">${esc(p.error)}</div>`:''}</div>`}).join('');
@@ -121,6 +114,8 @@ async function refresh(){
   try {
     const s=await api('/api/status'); lastStatus=s;
     document.getElementById('runtime').textContent=s.paused?'PAUSED':'RUNNING';
+    const sync=s.auto_sync||{};
+    document.getElementById('syncState').textContent=sync.last_sync_at ? 'auto sync: '+new Date(sync.last_sync_at*1000).toLocaleTimeString() : 'auto sync: waiting';
     document.getElementById('active').innerHTML=renderActive(s.active);
     document.getElementById('projects').innerHTML=renderProjects(s.projects||[]);
     document.getElementById('issues').innerHTML=renderIssues(s.issues||[]);
