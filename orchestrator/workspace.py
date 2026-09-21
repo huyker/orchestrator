@@ -109,11 +109,16 @@ class WorkspaceManager:
 
         expected_origin = self.clone_url(repo)
         actual_origin = self.run(["git", "remote", "get-url", "origin"], cwd=root)
-        normalized_actual = actual_origin.removesuffix(".git").replace("https://github.com/", "").replace("git@github.com:", "")
-        if normalized_actual != repo:
-            raise RuntimeError(
-                f"Managed path {root} belongs to {actual_origin}, expected {repo}"
+        if actual_origin != expected_origin:
+            normalized_actual = (
+                actual_origin.removesuffix(".git")
+                .replace("https://github.com/", "")
+                .replace("git@github.com:", "")
             )
+            if normalized_actual != repo:
+                raise RuntimeError(
+                    f"Managed path {root} belongs to {actual_origin}, expected {repo}"
+                )
 
         self.run(["git", "fetch", "origin", "--prune"], cwd=root, timeout=300)
         branch = (default_branch or "").strip() or self.remote_default_branch(root)
