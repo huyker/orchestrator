@@ -71,6 +71,21 @@ class AllInOneApplicationTests(unittest.TestCase):
             thread.join(timeout=2)
             self.assertEqual(calls, ["labels", "worker"])
 
+    def test_self_update_requests_clean_restart_after_fast_forward(self):
+        with tempfile.TemporaryDirectory() as td:
+            app = AllInOneApplication(settings_for(td))
+            class FakeUpdater:
+                def check_and_apply(self, active_task):
+                    self.active_task = active_task
+                    return {"state":"updated","message":"updated","checked_at":1}
+            updater = FakeUpdater()
+            app.self_updater = updater
+            app.engine.state.get_lease = lambda: None
+            app._self_update_forever()
+            self.assertFalse(updater.active_task)
+            self.assertTrue(app.restart_requested.is_set())
+            self.assertTrue(app.stop.is_set())
+
     def test_successful_auto_sync_enables_projects_ready(self):
         with tempfile.TemporaryDirectory() as td:
             app = AllInOneApplication(settings_for(td))

@@ -109,11 +109,41 @@ https://github.com/owner/repo.git
 owner/repo
 ```
 
-For a local path, the selected folder itself is the authoritative project Git checkout. The app reads the repository through Git (`rev-parse`, `remote`, HEAD, branch, status and `.git` metadata) and never checks out or resets that working tree. Task execution creates a separate `git worktree` backed by the same repository/object database, so no duplicate full clone is required.
+For a local path, **you only provide the folder**. Orchestrator immediately runs Git discovery and automatically detects the Git root, `.git` directory, `origin`, GitHub `owner/repo`, current branch, HEAD, dirty/clean state and `.orchestrator/project.json` when present. The detected repository/project ID/issue repo/branch are auto-filled in the Add Project dialog.
+
+The selected folder itself is the authoritative project Git checkout. The app reads the repository through Git (`rev-parse`, `remote`, HEAD, branch, status and `.git` metadata) and never checks out or resets that working tree. Task execution creates a separate `git worktree` backed by the same repository/object database, so no duplicate full clone is required.
 
 If the local repository already has `.orchestrator/project.json`, its project ID is automatically detected. Otherwise you can enter a Project ID in the modal.
 
 The registry is persisted to `projects.json` and the all-in-one app picks it up on the next automatic sync without restart.
+
+## Orchestrator self update
+
+After the one-time version containing this feature is pulled, `python app.py` keeps the orchestrator itself current automatically.
+
+Every `ORCH_SELF_UPDATE_INTERVAL` seconds (default 15), the app:
+
+1. fetches `origin/main`;
+2. compares the running checkout with the remote head;
+3. waits if a managed-project task is active;
+4. refuses to overwrite local orchestrator code changes or a diverged branch;
+5. fast-forwards to `origin/main` when safe;
+6. preserves locally registered entries in `projects.json`;
+7. shuts down the dashboard cleanly;
+8. starts the updated `python app.py` automatically on the same URL.
+
+The dashboard header shows `Updater: CURRENT / PENDING / BLOCKED / ERROR`.
+
+Configuration:
+
+```env
+ORCH_SELF_UPDATE=1
+ORCH_SELF_UPDATE_INTERVAL=15
+ORCH_SELF_UPDATE_REMOTE=origin
+ORCH_SELF_UPDATE_BRANCH=main
+```
+
+The self updater uses normal local Git/SSH credentials. It does not require GitHub API authentication.
 
 ## Automatic sync
 

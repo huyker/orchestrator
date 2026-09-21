@@ -32,7 +32,7 @@ from .models import (
     iter_commands,
     parse_task,
 )
-from .project import Registry, load_catalog, resolve_profiles, safe_path
+from .project import Registry, inspect_project_source, load_catalog, resolve_profiles, safe_path
 from .state import StateStore
 from .workspace import WorkspaceManager
 
@@ -57,6 +57,11 @@ class OrchestratorEngine:
             "name": None,
             "error": "GitHub authentication not checked yet",
         }
+        self._self_update_status: dict[str, Any] = {
+            "state": "starting",
+            "message": "Self updater not checked yet",
+            "checked_at": None,
+        }
 
     # ---------- GitHub authentication ----------
     def refresh_github_auth(self) -> dict[str, Any]:
@@ -70,6 +75,15 @@ class OrchestratorEngine:
 
     def github_auth_status(self) -> dict[str, Any]:
         return dict(self._github_auth)
+
+    def set_self_update_status(self, status: dict[str, Any]) -> None:
+        self._self_update_status = dict(status)
+
+    def self_update_status(self) -> dict[str, Any]:
+        return dict(self._self_update_status)
+
+    def inspect_managed_project_source(self, source: str) -> dict[str, Any]:
+        return inspect_project_source(source)
 
     def add_managed_project(
         self,
@@ -1117,6 +1131,7 @@ class OrchestratorEngine:
             "paused": self.state.is_paused(),
             "dashboard_bootstrap": dashboard_bootstrap,
             "github_auth": github_auth,
+            "self_update": self.self_update_status(),
             "auto_sync": {
                 "last_sync_at": self._last_sync_at,
                 "last_results": self._last_sync_results,

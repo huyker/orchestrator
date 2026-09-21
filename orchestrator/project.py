@@ -71,6 +71,96 @@ def default_project_id(repo: str) -> str:
     return slug or "project"
 
 
+def inspect_project_source(
+    source: str,
+    manifest_path: str = ".orchestrator/project.json",
+) -> dict[str, Any]:
+    repo, local_path = github_repo_from_source(source)
+    result: dict[str, Any] = {
+        "repo": repo,
+        "issues_repo": repo,
+        "project_id": default_project_id(repo),
+        "default_branch": "main",
+        "source_path": local_path,
+        "local": bool(local_path),
+        "manifest_path": manifest_path,
+        "manifest_exists": False,
+    }
+    if not local_path:
+        return result
+
+    root = Path(local_path)
+    commands = {
+        "git_root": ["git", "rev-parse", "--show-toplevel"],
+        "git_dir": ["git", "rev-parse", "--git-dir"],
+        "head": ["git", "rev-parse", "HEAD"],
+    }
+    for key, command in commands.items():
+        proc = subprocess.run(
+            command,
+            cwd=root,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            timeout=10,
+        )
+        if proc.returncode:
+            raise ValueError(f"Cannot inspect {key} for {root}: {proc.stdout.strip()}")
+        value = proc.stdout.strip()
+        if key == "git_dir":
+            path = Path(value)
+            if not path.is_absolute():
+                path = (root / path).resolve()
+            value = str(path)
+        result[key] = value
+
+    branch_proc = subprocess.run(
+        ["git", "symbolic-ref", "--quiet", "--short", "HEAD"],
+        cwd=root,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        timeout=10,
+    )
+    if branch_proc.returncode == 0 and branch_proc.stdout.strip():
+        result["branch"] = branch_proc.stdout.strip()
+        result["default_branch"] = branch_proc.stdout.strip()
+    else:
+        result["branch"] = "(detached)"
+
+    status_proc = subprocess.run(
+        ["git", "status", "--porcelain"],
+        cwd=root,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        timeout=10,
+    )
+    result["dirty"] = bool(status_proc.stdout.strip()) if status_proc.returncode == 0 else None
+
+    manifest_file = root / manifest_path
+    if manifest_file.is_file():
+        result["manifest_exists"] = True
+        try:
+            manifest = json.loads(manifest_file.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            result["manifest_error"] = str(exc)
+        else:
+            project_id = str(manifest.get("project") or "").strip()
+            manifest_repo = str(manifest.get("repository") or "").strip()
+            if manifest_repo and manifest_repo != repo:
+                result["manifest_repo_mismatch"] = {
+                    "manifest": manifest_repo,
+                    "origin": repo,
+                }
+            if project_id:
+                result["project_id"] = project_id
+            if manifest_repo:
+                result["manifest_repository"] = manifest_repo
+
+    return result
+
+
 class Registry:
     def __init__(self, path: Path):
         self.path = path
