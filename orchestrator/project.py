@@ -28,24 +28,32 @@ def github_repo_from_source(source: str) -> tuple[str, str | None]:
 
     candidate = Path(raw).expanduser()
     if candidate.exists() and candidate.is_dir():
-        git_dir = candidate / ".git"
-        if not git_dir.exists():
-            raise ValueError(f"Local path is not a git repository: {candidate}")
-        proc = subprocess.run(
-            ["git", "remote", "get-url", "origin"],
+        top_proc = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
             cwd=candidate,
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             timeout=10,
         )
+        if top_proc.returncode:
+            raise ValueError(f"Local path is not inside a git repository: {candidate}")
+        git_root = Path(top_proc.stdout.strip()).resolve()
+        proc = subprocess.run(
+            ["git", "remote", "get-url", "origin"],
+            cwd=git_root,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            timeout=10,
+        )
         if proc.returncode:
-            raise ValueError(f"Cannot read git origin from {candidate}: {proc.stdout.strip()}")
+            raise ValueError(f"Cannot read git origin from {git_root}: {proc.stdout.strip()}")
         remote = proc.stdout.strip()
         for pattern in _GITHUB_PATTERNS:
             match = pattern.match(remote)
             if match:
-                return match.group("repo").removesuffix(".git"), str(candidate.resolve())
+                return match.group("repo").removesuffix(".git"), str(git_root)
         raise ValueError(
             "Local project origin is not a GitHub repository. "
             "Managed Issue/PR transport currently requires GitHub."

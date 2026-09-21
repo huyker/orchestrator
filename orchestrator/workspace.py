@@ -30,11 +30,49 @@ class WorkspaceManager:
             return f"git@github.com:{repo}.git"
         return f"https://github.com/{repo}.git"
 
-    def repo_dir(self, repo: str) -> Path:
+    def repo_dir(self, repo: str, source_path: str | None = None) -> Path:
+        if source_path:
+            return Path(source_path).expanduser().resolve()
         return self.settings.workspace_root / repo.replace("/", "__")
 
-    def sync_project(self, repo: str, default_branch: str) -> Path:
-        root = self.repo_dir(repo)
+    def inspect_repo(self, root: Path) -> dict[str, str | bool]:
+        top = Path(self.run(["git", "rev-parse", "--show-toplevel"], cwd=root)).resolve()
+        git_dir_raw = self.run(["git", "rev-parse", "--git-dir"], cwd=top)
+        git_dir = Path(git_dir_raw)
+        if not git_dir.is_absolute():
+            git_dir = (top / git_dir).resolve()
+        branch_proc = subprocess.run(
+            ["git", "symbolic-ref", "--quiet", "--short", "HEAD"],
+            cwd=top,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+        branch = branch_proc.stdout.strip() if branch_proc.returncode == 0 else "(detached)"
+        remote_proc = subprocess.run(
+            ["git", "remote", "get-url", "origin"],
+            cwd=top,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+        return {
+            "root": str(top),
+            "git_dir": str(git_dir),
+            "head": self.run(["git", "rev-parse", "HEAD"], cwd=top),
+            "branch": branch,
+            "origin": remote_proc.stdout.strip() if remote_proc.returncode == 0 else "",
+            "dirty": bool(self.run(["git", "status", "--porcelain"], cwd=top)),
+        }
+
+    def sync_project(self, repo: str, default_branch: str, source_path: str | None = None) -> Path:
+        root = self.repo_dir(repo, source_path)
+        if source_path:
+            # A configured local checkout is the authoritative project source.
+            # Read it in place; never checkout/reset the user's working tree.
+            info = self.inspect_repo(root)
+            return Path(str(info["root"]))
+
         if not root.exists():
             root.parent.mkdir(parents=True, exist_ok=True)
             self.run(["git", "clone", self.clone_url(repo), str(root)], timeout=300)
@@ -43,12 +81,20 @@ class WorkspaceManager:
         self.run(["git", "reset", "--hard", f"origin/{default_branch}"], cwd=root)
         return root
 
-    def prepare_task(self, repo: str, base: str, issue_number: int, task_id: str) -> tuple[Path, str]:
-        root = self.repo_dir(repo)
+    def prepare_task(
+        self,
+        repo: str,
+        base: str,
+        issue_number: int,
+        task_id: str,
+        source_path: str | None = None,
+    ) -> tuple[Path, str]:
+        root = self.repo_dir(repo, source_path)
         if not root.exists():
-            self.sync_project(repo, base)
-        else:
-            self.run(["git", "fetch", "origin", "--prune"], cwd=root, timeout=300)
+            self.sync_project(repo, base, source_path)
+        # Fetching only updates refs/object data and does not modify the user's
+        # checked-out files, even when root is the configured local source.
+        self.run(["git", "fetch", "origin", "--prune"], cwd=root, timeout=300)
 
         safe = re.sub(r"[^a-zA-Z0-9._-]+", "-", task_id).strip("-").lower() or "task"
         branch = f"task/issue-{issue_number}-{safe}"

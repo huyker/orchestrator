@@ -109,7 +109,7 @@ https://github.com/owner/repo.git
 owner/repo
 ```
 
-For a local path, the app reads `git remote get-url origin` to identify the GitHub repository. It does **not** reset or use your working checkout as the orchestrator task workspace; task work continues in the orchestrator-managed isolated clone/worktree.
+For a local path, the selected folder itself is the authoritative project Git checkout. The app reads the repository through Git (`rev-parse`, `remote`, HEAD, branch, status and `.git` metadata) and never checks out or resets that working tree. Task execution creates a separate `git worktree` backed by the same repository/object database, so no duplicate full clone is required.
 
 If the local repository already has `.orchestrator/project.json`, its project ID is automatically detected. Otherwise you can enter a Project ID in the modal.
 

@@ -267,8 +267,13 @@ class OrchestratorEngine:
             result: list[dict[str, Any]] = []
             for project in self.registry.list():
                 try:
-                    root = self.workspace.sync_project(project["repo"], project.get("default_branch", "main"))
-                    head = self.workspace.run(["git", "rev-parse", "HEAD"], cwd=root)
+                    root = self.workspace.sync_project(
+                        project["repo"],
+                        project.get("default_branch", "main"),
+                        project.get("source_path"),
+                    )
+                    repo_info = self.workspace.inspect_repo(root)
+                    head = str(repo_info["head"])
                     catalog = load_catalog(root, project.get("manifest_path", ".orchestrator/project.json"))
                     if catalog["manifest"].get("project") != project["id"]:
                         raise ValueError("manifest project id mismatch")
@@ -290,6 +295,8 @@ class OrchestratorEngine:
                         "ok": True,
                         "head": head,
                         "changed": project_changed,
+                        "source": "local" if project.get("source_path") else "managed-clone",
+                        "repo_info": repo_info,
                         "agents": sorted(catalog["agents"]),
                         "task_profiles": sorted(catalog["tasks"]),
                         "plans": catalog["plans"],
@@ -307,7 +314,7 @@ class OrchestratorEngine:
     def project_snapshot(self) -> list[dict[str, Any]]:
         rows = []
         for project in self.registry.list():
-            root = self.workspace.repo_dir(project["repo"])
+            root = self.workspace.repo_dir(project["repo"], project.get("source_path"))
             row: dict[str, Any] = {
                 "id": project["id"],
                 "repo": project["repo"],
@@ -319,7 +326,10 @@ class OrchestratorEngine:
             if root.exists():
                 try:
                     catalog = load_catalog(root, project.get("manifest_path", ".orchestrator/project.json"))
+                    repo_info = self.workspace.inspect_repo(root)
                     row.update({
+                        "repo_info": repo_info,
+                        "source": "local" if project.get("source_path") else "managed-clone",
                         "agents": sorted(catalog["agents"]),
                         "agent_profiles": catalog["agents"],
                         "task_profiles": sorted(catalog["tasks"]),
@@ -596,8 +606,18 @@ class OrchestratorEngine:
         task["target_repo"] = project["repo"]
         task["base_branch"] = task.get("base_branch") or project.get("default_branch", "main")
 
-        project_root = self.workspace.sync_project(task["target_repo"], task["base_branch"])
-        worktree, branch = self.workspace.prepare_task(task["target_repo"], task["base_branch"], issue_number, task["task_id"])
+        project_root = self.workspace.sync_project(
+            task["target_repo"],
+            task["base_branch"],
+            project.get("source_path"),
+        )
+        worktree, branch = self.workspace.prepare_task(
+            task["target_repo"],
+            task["base_branch"],
+            issue_number,
+            task["task_id"],
+            project.get("source_path"),
+        )
         catalog = load_catalog(worktree, project.get("manifest_path", ".orchestrator/project.json"))
         manifest = catalog["manifest"]
         if manifest.get("project") != task["project"] or manifest.get("repository") != task["target_repo"]:
@@ -1135,7 +1155,11 @@ class OrchestratorEngine:
 
     def update_graphify(self, project_id: str) -> dict[str, Any]:
         project = self.registry.resolve(project_id)
-        root = self.workspace.sync_project(project["repo"], project.get("default_branch", "main"))
+        root = self.workspace.sync_project(
+            project["repo"],
+            project.get("default_branch", "main"),
+            project.get("source_path"),
+        )
         catalog = load_catalog(root, project.get("manifest_path", ".orchestrator/project.json"))
         status = self.graphify.ensure_graph(root, catalog["manifest"])
         self.state.add_event("graphify_updated", {"project": project_id, "status": status})
