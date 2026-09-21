@@ -1,15 +1,41 @@
 import json
+import os
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
-from orchestrator.models import canonical_task_hash, parse_task
+from orchestrator.models import Settings, canonical_task_hash, parse_task
 from orchestrator.project import Registry, load_catalog, safe_path
 from orchestrator.state import StateStore
 
 
 class ModelsStateTests(unittest.TestCase):
+    def test_settings_do_not_require_control_repo_and_infer_author(self):
+        with tempfile.TemporaryDirectory() as td:
+            registry = Path(td) / "projects.json"
+            registry.write_text(json.dumps({
+                "schema_version": 1,
+                "projects": [
+                    {
+                        "id": "gamegit",
+                        "repo": "huyker/game",
+                        "issues_repo": "huyker/game",
+                        "default_branch": "main"
+                    }
+                ]
+            }))
+            with patch.dict(os.environ, {
+                "GITHUB_TOKEN": "token",
+                "ORCH_PROJECT_REGISTRY": str(registry),
+                "ORCH_RUNTIME_DIR": str(Path(td) / "runtime"),
+                "ORCH_WORKSPACE_ROOT": str(Path(td) / "repos"),
+            }, clear=True):
+                settings = Settings.from_env()
+            self.assertEqual(settings.control_repo, "")
+            self.assertEqual(settings.allowed_authors, ("huyker",))
+
     def test_parse_exactly_one_task_block(self):
         body = '```orchestrator-task\n{"schema_version":1,"revision":1,"task_id":"T1","project":"p","type":"code","title":"x","objective":"y"}\n```'
         self.assertEqual(parse_task(body)["task_id"], "T1")
