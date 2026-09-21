@@ -75,6 +75,8 @@ class GitHubClient:
             args,
             input=input_text,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             timeout=60,
