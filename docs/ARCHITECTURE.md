@@ -4,10 +4,13 @@
 
 ### 1. GPT / User
 
-- creates/revises the canonical GitHub Issue task contract;
-- answers local-agent questions through Issue comments;
-- approves explicit user gates through Issue comments;
+For managed projects only:
+- creates/revises the canonical project GitHub Issue task contract;
+- answers local-agent questions through project Issue comments;
+- approves explicit user gates through project Issue comments;
 - performs external review bound to an exact PR head SHA/review cycle.
+
+For the orchestrator repository itself, GPT/user does not use the runtime Issue queue: orchestrator changes are implemented directly on a code branch, reviewed, and merged.
 
 ### 2. `huyker/orchestrator`
 
@@ -38,6 +41,10 @@ Owns:
 - optional Graphify config.
 
 It does not own active task queue/state files.
+
+## Bootstrap gate
+
+The managed-project task plane is disabled until the localhost dashboard has successfully bound and passed both `/api/health` and `/api/status` smoke checks. The verified state is persisted locally. The Issue scheduler, task claim path and retry operations fail closed before this gate.
 
 ## Data flow
 
@@ -97,7 +104,9 @@ Graphify can never activate work or override an Issue contract.
 
 ## Issue ownership
 
-The orchestrator does not centralize all project tasks in its own public repository.
+The orchestrator repository is **not** a managed-project task queue. Orchestrator development uses normal code branch/review/merge directly.
+
+The orchestrator does not centralize managed-project tasks in its own public repository.
 
 Each registry entry declares `issues_repo` (defaulting to `repo`). The scheduler aggregates `orch:ready` Issues across those repositories and verifies that the Issue task's `project` matches the registry entry for that Issue source.
 
