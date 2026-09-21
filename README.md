@@ -43,9 +43,9 @@ Requirements:
 
 - Python 3.11+
 - Git
-- SSH access to managed private repositories, or configure HTTPS transport
+- SSH access to managed GitHub repositories
+- GitHub CLI (`gh`) already authenticated on the machine for Issue/PR API operations
 - local `agy` executable for Antigravity agent execution
-- GitHub token with access to managed repositories
 
 Clone and configure:
 
@@ -55,24 +55,16 @@ cd orchestrator
 cp .env.example .env
 ```
 
-You can run immediately without putting a token in `.env`:
+No GitHub token is configured inside orchestrator.
+
+Git clone/fetch/pull/push use the machine's existing SSH credentials. GitHub Issue/PR operations use the existing `gh` CLI login. Verify it once outside orchestrator:
 
 ```bash
-python app.py
+ssh -T git@github.com
+gh auth status
 ```
 
-GitHub authentication is resolved in this order:
-
-1. `GITHUB_TOKEN`;
-2. `GH_TOKEN`;
-3. existing GitHub CLI login from `gh auth token`;
-4. if none is available, the dashboard still opens and shows **Connect GitHub**, where you can paste a token once.
-
-A token entered in the dashboard is validated against GitHub, stored only in local `.env`, and activates the Issue worker without restarting the app.
-
-`ORCH_CONTROL_REPO` is no longer required. Managed-project task communication is routed from `projects.json -> issues_repo`.
-
-`ORCH_ALLOWED_AUTHORS` is also optional for the normal setup; when omitted, the app infers repository owners from `projects.json` (for example `huyker/game -> huyker`).
+Orchestrator never asks for, stores or writes a GitHub token.
 
 Then run:
 
@@ -100,22 +92,37 @@ It includes:
 
 ### Add another managed Git project
 
-Click **Add Project** in the dashboard and enter any of:
+Configure one managed storage root, for example:
 
-```text
-E:\Game studio\another-project
-git@github.com:owner/repo.git
-https://github.com/owner/repo.git
-owner/repo
+```env
+ORCH_MANAGED_ROOT=E:\
 ```
 
-For a local path, **you only provide the folder**. Orchestrator immediately runs Git discovery and automatically detects the Git root, `.git` directory, `origin`, GitHub `owner/repo`, current branch, HEAD, dirty/clean state and `.orchestrator/project.json` when present. The detected repository/project ID/issue repo/branch are auto-filled in the Add Project dialog.
+Then click **Add Project** and paste only the GitHub repository link:
 
-The selected folder itself is the authoritative project Git checkout. The app reads the repository through Git (`rev-parse`, `remote`, HEAD, branch, status and `.git` metadata) and never checks out or resets that working tree. Task execution creates a separate `git worktree` backed by the same repository/object database, so no duplicate full clone is required.
+```text
+https://github.com/huyker/game.git
+```
 
-If the local repository already has `.orchestrator/project.json`, its project ID is automatically detected. Otherwise you can enter a Project ID in the modal.
+SSH form and `owner/repo` shorthand are also accepted.
 
-The registry is persisted to `projects.json` and the all-in-one app picks it up on the next automatic sync without restart.
+The local project path is derived automatically as:
+
+```text
+<ORCH_MANAGED_ROOT>/<owner>/<repo>
+```
+
+For example:
+
+```text
+E:\huyker\game
+```
+
+When the repository does not exist locally, orchestrator clones it with the machine's SSH credentials. When it already exists, orchestrator verifies that its `origin` matches the registered GitHub repo, then runs `fetch` and `pull --ff-only` before loading the project manifest, Graphify state, plans and agents.
+
+There is no Add Folder workflow and no per-project local path field in the registry. Task execution still uses isolated Git worktrees under the orchestrator runtime directory.
+
+The registry stores repository identity and project metadata; filesystem placement comes only from `ORCH_MANAGED_ROOT`.
 
 ## Orchestrator self update
 
@@ -196,7 +203,7 @@ first project sync OK
 Issue worker enabled
 ```
 
-If GitHub is not authenticated, the dashboard remains usable and project Git sync keeps retrying, but Issue reads/writes remain disabled.
+If `gh auth status` is not healthy, the dashboard and SSH Git sync remain usable, but Issue/PR reads and writes remain disabled until the machine's GitHub CLI authentication is fixed.
 
 Successful startup prints:
 
@@ -290,30 +297,31 @@ Graphify never activates work and never overrides Issue requirements or project 
 Important settings:
 
 ```env
-GITHUB_TOKEN=                           # optional at startup
-# ORCH_CONTROL_REPO=huyker/orchestrator   # optional legacy fallback
+ORCH_MANAGED_ROOT=E:\
 ORCH_PROJECT_REGISTRY=projects.json
 ORCH_RUNTIME_DIR=.orchestrator-runtime
-ORCH_WORKSPACE_ROOT=.orchestrator-runtime/repos
 
 ORCH_POLL_INTERVAL=5
 ORCH_SYNC_INTERVAL=15
+ORCH_SELF_UPDATE=1
+ORCH_SELF_UPDATE_INTERVAL=15
+ORCH_SELF_UPDATE_REMOTE=origin
+ORCH_SELF_UPDATE_BRANCH=main
+
 ORCH_LEASE_TIMEOUT=90
 ORCH_AGENT_TIMEOUT=1800
 ORCH_TEST_TIMEOUT=600
-
 ORCH_AGY_BIN=agy
 ORCH_AGENT_EFFORT=medium
-# ORCH_ALLOWED_AUTHORS=huyker             # optional; inferred from registry by default
+# ORCH_ALLOWED_AUTHORS=huyker
 
 ORCH_GIT_TRANSPORT=ssh
-
 ORCH_DASHBOARD_HOST=127.0.0.1
 ORCH_DASHBOARD_PORT=8766
 ORCH_OPEN_BROWSER=1
 ```
 
-Set `ORCH_OPEN_BROWSER=0` if you do not want the app to open a browser automatically.
+No `GITHUB_TOKEN`, project folder path, or per-project workspace root is required. Set `ORCH_OPEN_BROWSER=0` if you do not want the app to open a browser automatically.
 
 ## Task ownership
 
