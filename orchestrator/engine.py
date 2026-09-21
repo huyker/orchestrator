@@ -58,8 +58,12 @@ class OrchestratorEngine:
             return explicit
         lease = self.state.get_lease()
         if lease and int(lease["issue_number"]) == int(issue_number):
-            return str(lease["payload"].get("issue_repo") or self.settings.control_repo)
-        return self.settings.control_repo
+            repo = str(lease["payload"].get("issue_repo") or "").strip()
+            if repo:
+                return repo
+        if self.settings.control_repo:
+            return self.settings.control_repo
+        raise RuntimeError("managed-project issue_repo is required; no legacy ORCH_CONTROL_REPO fallback is configured")
 
     def event(self, issue: int, event_type: str, *, issue_repo: str | None = None, **payload: Any) -> int:
         repo = self._issue_repo(issue, issue_repo)
