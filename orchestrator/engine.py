@@ -79,8 +79,9 @@ class OrchestratorEngine:
         self.github.set_lifecycle_label(self._issue_repo(issue, issue_repo), issue, label)
 
     def ensure_labels(self) -> None:
-        repos = {self.settings.control_repo}
-        repos.update(project["issues_repo"] for project in self.registry.list())
+        # Orchestrator itself is developed directly through code review/merge.
+        # Lifecycle labels belong only to managed-project Issue repositories.
+        repos = {project["issues_repo"] for project in self.registry.list()}
         for repo in sorted(repos):
             self.github.ensure_labels(repo)
 
@@ -758,6 +759,8 @@ class OrchestratorEngine:
         if not self._tick_lock.acquire(blocking=False):
             return
         try:
+            if not self.state.is_dashboard_verified():
+                return
             if self.state.is_paused():
                 return
             lease = self.state.get_lease()
@@ -888,6 +891,7 @@ class OrchestratorEngine:
         return {
             "instance_id": self.instance_id,
             "paused": self.state.is_paused(),
+            "dashboard_bootstrap": self.state.dashboard_verification(),
             "active": self.state.get_lease(),
             "projects": self.project_snapshot(),
             "issues": queue,
@@ -904,6 +908,8 @@ class OrchestratorEngine:
         self.state.add_event("resumed", {})
 
     def request_retry(self) -> None:
+        if not self.state.is_dashboard_verified():
+            raise RuntimeError("Dashboard bootstrap has not been verified; Issue operations are disabled")
         lease = self.state.get_lease()
         if not lease:
             raise RuntimeError("No active task")
