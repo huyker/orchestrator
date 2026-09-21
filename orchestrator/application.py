@@ -10,7 +10,7 @@ from pathlib import Path
 
 from .dashboard import make_server, verify_dashboard
 from .engine import OrchestratorEngine
-from .models import Settings, discover_github_token
+from .models import Settings
 from .self_update import SelfUpdater
 
 
@@ -46,11 +46,7 @@ class AllInOneApplication:
     def _auth_forever(self) -> None:
         while not self.stop.is_set():
             try:
-                if not self.engine.github_auth_status().get("connected"):
-                    token = discover_github_token()
-                    if token:
-                        self.engine.github.set_token(token)
-                    self.engine.refresh_github_auth()
+                self.engine.refresh_github_auth()
             except Exception as exc:
                 self.engine.state.add_event("github_auth_error", {"error": str(exc)})
             self.stop.wait(10)
