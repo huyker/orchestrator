@@ -41,6 +41,7 @@ class AllInOneApplicationTests(unittest.TestCase):
             calls = []
             app.engine.ensure_labels = lambda: calls.append("labels")
             app.engine.serve_loop = lambda stop: calls.append("worker")
+            app.engine.github_auth_status = lambda: {"connected": True, "login": "owner"}
 
             thread = threading.Thread(target=app._worker_after_sync)
             thread.start()
@@ -49,6 +50,25 @@ class AllInOneApplicationTests(unittest.TestCase):
             app.projects_ready.set()
             thread.join(timeout=2)
 
+            self.assertEqual(calls, ["labels", "worker"])
+
+    def test_worker_waits_for_github_connection(self):
+        with tempfile.TemporaryDirectory() as td:
+            app = AllInOneApplication(settings_for(td))
+            calls = []
+            auth = {"connected": False}
+            app.engine.github_auth_status = lambda: dict(auth)
+            app.engine.ensure_labels = lambda: calls.append("labels")
+            app.engine.serve_loop = lambda stop: calls.append("worker")
+            app.projects_ready.set()
+
+            thread = threading.Thread(target=app._worker_after_sync)
+            thread.start()
+            threading.Event().wait(0.05)
+            self.assertEqual(calls, [])
+
+            auth["connected"] = True
+            thread.join(timeout=2)
             self.assertEqual(calls, ["labels", "worker"])
 
     def test_successful_auto_sync_enables_projects_ready(self):
