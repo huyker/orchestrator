@@ -68,25 +68,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._json({"ok": False, "error": "missing local dashboard control header"}, 403)
             return
         try:
-            if route == "/api/setup/github-token":
-                payload = self._read_json()
-                status = self.engine.connect_github_token(str(payload.get("token") or ""))
-                self._json({"ok": True, "github_auth": status})
-                return
-            if route == "/api/projects/inspect":
-                payload = self._read_json()
-                inspection = self.engine.inspect_managed_project_source(
-                    str(payload.get("source") or "")
-                )
-                self._json({"ok": True, "inspection": inspection})
-                return
             if route == "/api/projects/add":
                 payload = self._read_json()
                 entry = self.engine.add_managed_project(
-                    str(payload.get("source") or ""),
-                    project_id=(str(payload.get("project_id") or "").strip() or None),
-                    issues_repo=(str(payload.get("issues_repo") or "").strip() or None),
-                    default_branch=(str(payload.get("default_branch") or "main").strip() or "main"),
+                    str(payload.get("repository") or payload.get("source") or "")
                 )
                 self._json({"ok": True, "project": entry})
                 return
