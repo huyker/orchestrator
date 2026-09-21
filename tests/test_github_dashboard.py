@@ -29,8 +29,9 @@ class FakeState:
     def add_event(self,event_type,payload): self.events.append((event_type,payload))
 
 class FakeEngine:
-    def __init__(self): self.paused=False; self.state=FakeState()
-    def snapshot(self): return {"paused":self.paused,"active":None,"projects":[],"issues":[],"events":[]}
+    def __init__(self): self.paused=False; self.state=FakeState(); self.connected_token=None
+    def snapshot(self): return {"paused":self.paused,"github_auth":{"connected":False},"active":None,"projects":[],"issues":[],"events":[]}
+    def connect_github_token(self, token): self.connected_token=token; return {"connected":True,"login":"owner","error":None}
     def pause(self): self.paused=True
     def resume(self): self.paused=False
     def tick(self): pass
@@ -53,6 +54,26 @@ class GitHubDashboardTests(unittest.TestCase):
             address=verify_dashboard(engine,"127.0.0.1",port)
             self.assertEqual(engine.state.verified,address)
             self.assertEqual(engine.state.events[-1][0],"dashboard_verified")
+        finally:
+            server.shutdown(); server.server_close()
+
+    def test_dashboard_can_connect_github_token(self):
+        engine = FakeEngine()
+        server = make_server(engine,"127.0.0.1",0)
+        thread = threading.Thread(target=server.serve_forever,daemon=True); thread.start()
+        try:
+            port=server.server_address[1]
+            payload=json.dumps({"token":"secret-token"}).encode()
+            req=urllib.request.Request(
+                f"http://127.0.0.1:{port}/api/setup/github-token",
+                data=payload,
+                method="POST",
+                headers={"X-Orchestrator-UI":"1","Content-Type":"application/json"},
+            )
+            with urllib.request.urlopen(req) as r:
+                data=json.loads(r.read())
+            self.assertTrue(data["github_auth"]["connected"])
+            self.assertEqual(engine.connected_token,"secret-token")
         finally:
             server.shutdown(); server.server_close()
 
