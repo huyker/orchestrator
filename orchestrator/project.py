@@ -102,7 +102,21 @@ class Registry:
         manifest_path: str = ".orchestrator/project.json",
     ) -> dict[str, Any]:
         repo, local_path = github_repo_from_source(source)
-        pid = (project_id or default_project_id(repo)).strip()
+        manifest_hint: dict[str, Any] = {}
+        if local_path:
+            hint_file = Path(local_path) / manifest_path
+            if hint_file.is_file():
+                try:
+                    manifest_hint = json.loads(hint_file.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError):
+                    manifest_hint = {}
+        hinted_id = str(manifest_hint.get("project") or "").strip()
+        hinted_repo = str(manifest_hint.get("repository") or "").strip()
+        if hinted_repo and hinted_repo != repo:
+            raise ValueError(
+                f"Local project manifest repository {hinted_repo} does not match git origin {repo}"
+            )
+        pid = (project_id or hinted_id or default_project_id(repo)).strip()
         if not re.fullmatch(r"[A-Za-z0-9._-]+", pid):
             raise ValueError("Project ID may contain only letters, numbers, dot, underscore and dash")
         if pid in self.projects:
