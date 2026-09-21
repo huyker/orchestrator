@@ -13,39 +13,57 @@ class GitHubClient:
     """GitHub API client backed by the already-authenticated local gh CLI."""
 
     def __init__(self, token: str = ""):
-        # token is retained only for constructor compatibility with older callers.
-        # Orchestrator never reads, writes or persists GitHub tokens.
-        self.token = ""
+        self.token = str(token or "").strip()
+
+    def _get_token(self) -> str:
+        import os
+        return (self.token or os.getenv("GITHUB_TOKEN") or os.getenv("GH_TOKEN") or "").strip()
 
     def auth_status(self) -> dict[str, Any]:
-        if not shutil.which("gh"):
-            return {
-                "connected": False,
-                "login": None,
-                "error": "GitHub CLI (gh) is not installed",
-                "provider": "gh-cli",
-            }
-        try:
-            user = self.request("GET", "/user")
-            return {
-                "connected": True,
-                "login": user.get("login"),
-                "name": user.get("name"),
-                "error": None,
-                "provider": "gh-cli",
-            }
-        except Exception as exc:
-            return {
-                "connected": False,
-                "login": None,
-                "error": f"GitHub CLI is not authenticated: {exc}",
-                "provider": "gh-cli",
-            }
+        token = self._get_token()
+        if shutil.which("gh"):
+            try:
+                user = self._request_gh("GET", "/user")
+                return {
+                    "connected": True,
+                    "login": user.get("login"),
+                    "name": user.get("name"),
+                    "error": None,
+                    "provider": "gh-cli",
+                }
+            except Exception as exc:
+                if not token:
+                    return {
+                        "connected": False,
+                        "login": None,
+                        "error": f"GitHub CLI is not authenticated: {exc}",
+                        "provider": "gh-cli",
+                    }
+        if token:
+            try:
+                user = self._request_token("GET", "/user", token=token)
+                return {
+                    "connected": True,
+                    "login": user.get("login"),
+                    "name": user.get("name"),
+                    "error": None,
+                    "provider": "token",
+                }
+            except Exception as exc:
+                return {
+                    "connected": False,
+                    "login": None,
+                    "error": f"GitHub Token authentication failed: {exc}",
+                    "provider": "token",
+                }
+        return {
+            "connected": False,
+            "login": None,
+            "error": "GitHub CLI is not authenticated and no GITHUB_TOKEN provided",
+            "provider": "gh-cli",
+        }
 
-    def request(self, method: str, path: str, data: Any | None = None) -> Any:
-        if not shutil.which("gh"):
-            raise RuntimeError("GitHub CLI (gh) is required for Issue/PR operations")
-
+    def _request_gh(self, method: str, path: str, data: Any | None = None) -> Any:
         endpoint = path.lstrip("/")
         args = ["gh", "api", endpoint, "-X", method]
         input_text = None
@@ -65,6 +83,37 @@ class GitHubClient:
             raise RuntimeError(f"gh api {method} {path}: {proc.stdout.strip()}")
         raw = proc.stdout.strip()
         return json.loads(raw) if raw else None
+
+    def _request_token(self, method: str, path: str, data: Any | None = None, token: str = "") -> Any:
+        import urllib.request
+        url = f"https://api.github.com/{path.lstrip('/')}"
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "orchestrator",
+            "X-GitHub-Api-Version": "2022-11-28",
+        }
+        req_data = None
+        if data is not None:
+            headers["Content-Type"] = "application/json; charset=utf-8"
+            req_data = json.dumps(data, ensure_ascii=False).encode("utf-8")
+
+        req = urllib.request.Request(url, data=req_data, headers=headers, method=method)
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            raw = resp.read().decode("utf-8")
+            return json.loads(raw) if raw else None
+
+    def request(self, method: str, path: str, data: Any | None = None) -> Any:
+        token = self._get_token()
+        if shutil.which("gh"):
+            try:
+                return self._request_gh(method, path, data)
+            except Exception as exc:
+                if not token:
+                    raise
+        if token:
+            return self._request_token(method, path, data, token=token)
+        raise RuntimeError("GitHub CLI (gh) or GITHUB_TOKEN is required for Issue/PR operations")
 
     def paged(self, path: str, per_page: int = 100) -> list[dict]:
         sep = "&" if "?" in path else "?"

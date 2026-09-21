@@ -124,10 +124,84 @@ def canonical_task_hash(task: dict[str, Any]) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
+EVENT_BLOCK = re.compile(r"```orchestrator-event\s*(\{.*?\})\s*```", re.S)
+EVENT_HEADER = re.compile(
+    r"^\s*\[(?P<issue_tag>issue\d+|[A-Za-z0-9_.-]+)_(?P<event>[A-Za-z0-9_]+)_by(?P<actor>[A-Za-z0-9_]+)\]",
+    re.M,
+)
+
+
+def _normalize_payload(raw: dict[str, Any]) -> dict[str, Any]:
+    out = dict(raw)
+    event = str(out.get("event") or out.get("type") or out.get("command") or "").lower()
+    if event in ("review_pass", "gpt_approved"):
+        out["command"] = "external_review"
+        out.setdefault("verdict", "PASS")
+    elif event in ("review_fix", "gpt_fix_required"):
+        out["command"] = "external_review"
+        out.setdefault("verdict", "FIX_REQUIRED")
+    elif event == "gate_approved":
+        out["command"] = "approve_gate"
+    elif event:
+        out.setdefault("command", event)
+
+    if "pr" in out and "pr_number" not in out:
+        out["pr_number"] = out["pr"]
+    if "head_sha" in out and "pr_head_sha" not in out:
+        out["pr_head_sha"] = out["head_sha"]
+    return out
+
+
+def _parse_text_event_comment(body: str) -> dict[str, Any] | None:
+    match = EVENT_HEADER.search(body or "")
+    if not match:
+        return None
+    issue_tag = match.group("issue_tag")
+    event = match.group("event")
+    actor = match.group("actor")
+    out: dict[str, Any] = {
+        "issue_id": issue_tag,
+        "event": event,
+        "actor": actor,
+    }
+    for line in (body or "").splitlines():
+        line = line.strip()
+        if ":" in line:
+            key, val = line.split(":", 1)
+            k = key.strip().lower()
+            v = val.strip()
+            if k in ("revision", "review_cycle", "pr", "pr_number", "priority"):
+                try:
+                    out[k] = int(v)
+                except ValueError:
+                    out[k] = v
+            elif k in ("question_id", "gate_id", "artifact_digest", "head_sha", "pr_head_sha", "reason", "verdict", "answer"):
+                out[k] = v
+
+    if "review_pass" in event:
+        out["verdict"] = "PASS"
+    elif "review_fix" in event:
+        out["verdict"] = "FIX_REQUIRED"
+
+    return _normalize_payload(out)
+
+
 def iter_commands(body: str):
+    found_any = False
     for match in COMMAND_BLOCK.finditer(body or ""):
-        yield json.loads(match.group(1))
+        found_any = True
+        yield _normalize_payload(json.loads(match.group(1)))
+
+    for match in EVENT_BLOCK.finditer(body or ""):
+        found_any = True
+        yield _normalize_payload(json.loads(match.group(1)))
+
+    if not found_any:
+        parsed = _parse_text_event_comment(body)
+        if parsed:
+            yield parsed
 
 
 def stable_json(data: Any) -> str:
     return json.dumps(data, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+

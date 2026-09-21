@@ -242,18 +242,25 @@ class OrchestratorEngine:
     def event(self, issue: int, event_type: str, *, issue_repo: str | None = None, **payload: Any) -> int:
         repo = self._issue_repo(issue, issue_repo)
         body = {
+            "schema_version": 1,
             "schema": "orch.event.v1",
+            "event_id": f"issue{issue}-{event_type}-{int(time.time())}",
+            "issue_id": f"issue{issue}",
+            "event": event_type,
             "type": event_type,
+            "actor": "ORCH",
             "instance_id": self.instance_id,
             "issue_repo": repo,
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             **payload,
         }
         self.state.add_event(event_type, {"issue_repo": repo, "issue_number": issue, **payload})
+        header = f"[issue{issue}_{event_type}_byORCH]"
+        comment_body = f"{header}\n\n```orchestrator-event\n" + json.dumps(body, ensure_ascii=False, indent=2) + "\n```"
         created = self.github.comment(
             repo,
             issue,
-            "```orchestrator-event\n" + json.dumps(body, ensure_ascii=False, indent=2) + "\n```",
+            comment_body,
         )
         return int(created["id"])
 
