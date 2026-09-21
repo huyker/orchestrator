@@ -47,6 +47,10 @@ class OrchestratorEngine:
         self.workspace = WorkspaceManager(settings)
         self.graphify = GraphifyAdapter()
         self._tick_lock = threading.Lock()
+        self._sync_lock = threading.Lock()
+        self._project_heads: dict[str, str] = {}
+        self._last_sync_at: float | None = None
+        self._last_sync_results: list[dict[str, Any]] = []
 
     # ---------- communication ----------
     def _issue_repo(self, issue_number: int, explicit: str | None = None) -> str:
@@ -115,28 +119,48 @@ class OrchestratorEngine:
 
     # ---------- project/catalog ----------
     def sync_projects(self) -> list[dict[str, Any]]:
-        result = []
-        for project in self.registry.list():
-            try:
-                root = self.workspace.sync_project(project["repo"], project.get("default_branch", "main"))
-                catalog = load_catalog(root, project.get("manifest_path", ".orchestrator/project.json"))
-                if catalog["manifest"].get("project") != project["id"]:
-                    raise ValueError("manifest project id mismatch")
-                if catalog["manifest"].get("repository") != project["repo"]:
-                    raise ValueError("manifest repository mismatch")
-                result.append({
-                    "id": project["id"],
-                    "repo": project["repo"],
-                    "ok": True,
-                    "agents": sorted(catalog["agents"]),
-                    "task_profiles": sorted(catalog["tasks"]),
-                    "plans": catalog["plans"],
-                    "graphify": self.graphify.status(root, catalog["manifest"]),
-                })
-            except Exception as exc:
-                result.append({"id": project["id"], "repo": project["repo"], "ok": False, "error": str(exc)})
-        self.state.add_event("projects_synced", {"projects": result})
-        return result
+        if not self._sync_lock.acquire(blocking=False):
+            return list(self._last_sync_results)
+        try:
+            result: list[dict[str, Any]] = []
+            for project in self.registry.list():
+                try:
+                    root = self.workspace.sync_project(project["repo"], project.get("default_branch", "main"))
+                    head = self.workspace.run(["git", "rev-parse", "HEAD"], cwd=root)
+                    catalog = load_catalog(root, project.get("manifest_path", ".orchestrator/project.json"))
+                    if catalog["manifest"].get("project") != project["id"]:
+                        raise ValueError("manifest project id mismatch")
+                    if catalog["manifest"].get("repository") != project["repo"]:
+                        raise ValueError("manifest repository mismatch")
+
+                    graph_status = self.graphify.status(root, catalog["manifest"])
+                    graph_cfg = self.graphify.config(catalog["manifest"])
+                    project_changed = self._project_heads.get(project["id"]) != head
+                    graph_needs_build = graph_cfg["enabled"] and not graph_status.get("graph_exists")
+                    auto_graph = graph_cfg["enabled"] and graph_cfg["auto_update"] not in (False, "off", "never")
+                    if auto_graph and (project_changed or graph_needs_build):
+                        graph_status = self.graphify.ensure_graph(root, catalog["manifest"])
+
+                    self._project_heads[project["id"]] = head
+                    result.append({
+                        "id": project["id"],
+                        "repo": project["repo"],
+                        "ok": True,
+                        "head": head,
+                        "changed": project_changed,
+                        "agents": sorted(catalog["agents"]),
+                        "task_profiles": sorted(catalog["tasks"]),
+                        "plans": catalog["plans"],
+                        "graphify": graph_status,
+                    })
+                except Exception as exc:
+                    result.append({"id": project["id"], "repo": project["repo"], "ok": False, "error": str(exc)})
+            self._last_sync_at = time.time()
+            self._last_sync_results = result
+            self.state.add_event("projects_synced", {"projects": result})
+            return result
+        finally:
+            self._sync_lock.release()
 
     def project_snapshot(self) -> list[dict[str, Any]]:
         rows = []
@@ -899,6 +923,10 @@ class OrchestratorEngine:
             "instance_id": self.instance_id,
             "paused": self.state.is_paused(),
             "dashboard_bootstrap": dashboard_bootstrap,
+            "auto_sync": {
+                "last_sync_at": self._last_sync_at,
+                "last_results": self._last_sync_results,
+            },
             "active": self.state.get_lease(),
             "projects": self.project_snapshot(),
             "issues": queue,
@@ -943,3 +971,13 @@ class OrchestratorEngine:
             except Exception as exc:
                 self.state.add_event("tick_error", {"error": str(exc)})
             stop_event.wait(self.settings.poll_interval)
+
+    def serve_sync_loop(self, stop_event: threading.Event | None = None, interval: int = 15) -> None:
+        stop_event = stop_event or threading.Event()
+        interval = max(5, int(interval))
+        while not stop_event.is_set():
+            try:
+                self.sync_projects()
+            except Exception as exc:
+                self.state.add_event("sync_error", {"error": str(exc)})
+            stop_event.wait(interval)
