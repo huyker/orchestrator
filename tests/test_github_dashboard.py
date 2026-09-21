@@ -2,6 +2,7 @@ import json
 import tempfile
 import threading
 import unittest
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -46,7 +47,16 @@ class GitHubDashboardTests(unittest.TestCase):
             port=server.server_address[1]
             with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/health") as r:
                 self.assertTrue(json.loads(r.read())["ok"])
-            req=urllib.request.Request(f"http://127.0.0.1:{port}/api/control/pause",data=b"",method="POST")
+            bad=urllib.request.Request(f"http://127.0.0.1:{port}/api/control/pause",data=b"",method="POST")
+            with self.assertRaises(urllib.error.HTTPError) as denied:
+                urllib.request.urlopen(bad)
+            self.assertEqual(denied.exception.code, 403)
+            req=urllib.request.Request(
+                f"http://127.0.0.1:{port}/api/control/pause",
+                data=b"",
+                method="POST",
+                headers={"X-Orchestrator-UI":"1"},
+            )
             with urllib.request.urlopen(req) as r:
                 self.assertTrue(json.loads(r.read())["ok"])
             self.assertTrue(engine.paused)
