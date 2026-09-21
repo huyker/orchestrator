@@ -113,6 +113,20 @@ class GitHub:
     def set_labels(self, repo: str, number: int, labels: list[str]) -> None:
         self._request("PUT", f"/repos/{repo}/issues/{number}/labels", {"labels": labels})
 
+    def ensure_label(self, repo: str, name: str) -> None:
+        path = f"/repos/{repo}/labels/{urllib.parse.quote(name, safe='')}"
+        try:
+            self._request("GET", path)
+            return
+        except RuntimeError as exc:
+            if "HTTP 404" not in str(exc):
+                raise
+        self._request("POST", f"/repos/{repo}/labels", {
+            "name": name,
+            "color": "1f6feb",
+            "description": "Managed by Issue Orchestrator"
+        })
+
     def create_pr(self, repo: str, title: str, body: str, head: str, base: str) -> dict:
         return self._request("POST", f"/repos/{repo}/pulls", {
             "title": title, "body": body, "head": head, "base": base
@@ -430,6 +444,10 @@ class IssueOrchestrator:
                    reviewer_profile=reviewer.get("id"), available_plans=catalog["plans"])
 
         comments = self.github.comments(self.s.control_repo, number)
+        discussion = "\n\n".join(
+            f"@{((x.get('user') or {}).get('login') or 'unknown')}: {x.get('body') or ''}"
+            for x in comments[-50:]
+        )
         context = self.build_context(wt, task, catalog, profile, executor)
         prompt = f"""You are the LOCAL EXECUTOR for GitHub Issue #{number}.
 The Issue contract is authoritative. Do not read legacy task/status files as task transport.
@@ -438,6 +456,9 @@ Project task profile: {json.dumps(profile, ensure_ascii=False, indent=2)}
 Project executor profile: {json.dumps(executor, ensure_ascii=False, indent=2)}
 Project context:
 {context}
+
+Latest Issue discussion (answers, GPT findings and status messages):
+{discussion}
 
 Rules:
 - Implement only this Issue contract.
@@ -581,6 +602,10 @@ Include exactly one entry for every acceptance/prohibited string. Evidence may n
                 self.event(int(issue["number"]), "blocked", reason=str(exc))
                 self.state.clear()
                 return
+
+    def bootstrap_labels(self) -> None:
+        for label in sorted(ALL_LABELS):
+            self.github.ensure_label(self.s.control_repo, label)
 
     def serve(self) -> None:
         self.s.runtime_dir.mkdir(parents=True, exist_ok=True)
