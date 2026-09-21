@@ -17,11 +17,12 @@ class Registry:
                 continue
             project_id = str(item.get("id", "")).strip()
             repo = str(item.get("repo", "")).strip()
-            if not project_id or "/" not in repo:
+            issues_repo = str(item.get("issues_repo") or repo).strip()
+            if not project_id or "/" not in repo or "/" not in issues_repo:
                 raise ValueError(f"Invalid project registry entry: {item}")
             if project_id in projects:
                 raise ValueError(f"Duplicate project id: {project_id}")
-            projects[project_id] = item
+            projects[project_id] = {**item, "issues_repo": issues_repo}
         self.projects = projects
 
     def resolve(self, project_id: str) -> dict[str, Any]:
