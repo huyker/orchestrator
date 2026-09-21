@@ -1,8 +1,66 @@
 from __future__ import annotations
 
 import json
+import re
+import subprocess
 from pathlib import Path
 from typing import Any
+
+
+_GITHUB_PATTERNS = (
+    re.compile(r"^git@github\.com:(?P<repo>[^/\s]+/[^/\s]+?)(?:\.git)?$"),
+    re.compile(r"^ssh://git@github\.com/(?P<repo>[^/\s]+/[^/\s]+?)(?:\.git)?$"),
+    re.compile(r"^https?://github\.com/(?P<repo>[^/\s]+/[^/\s]+?)(?:\.git)?/?$"),
+    re.compile(r"^(?P<repo>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)$"),
+)
+
+
+def github_repo_from_source(source: str) -> tuple[str, str | None]:
+    """Return (owner/repo, local_path) from owner/repo, GitHub URL, or local git checkout."""
+    raw = str(source or "").strip().strip('"')
+    if not raw:
+        raise ValueError("Git project path / URL is required")
+
+    for pattern in _GITHUB_PATTERNS:
+        match = pattern.match(raw)
+        if match:
+            return match.group("repo").removesuffix(".git"), None
+
+    candidate = Path(raw).expanduser()
+    if candidate.exists() and candidate.is_dir():
+        git_dir = candidate / ".git"
+        if not git_dir.exists():
+            raise ValueError(f"Local path is not a git repository: {candidate}")
+        proc = subprocess.run(
+            ["git", "remote", "get-url", "origin"],
+            cwd=candidate,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            timeout=10,
+        )
+        if proc.returncode:
+            raise ValueError(f"Cannot read git origin from {candidate}: {proc.stdout.strip()}")
+        remote = proc.stdout.strip()
+        for pattern in _GITHUB_PATTERNS:
+            match = pattern.match(remote)
+            if match:
+                return match.group("repo").removesuffix(".git"), str(candidate.resolve())
+        raise ValueError(
+            "Local project origin is not a GitHub repository. "
+            "Managed Issue/PR transport currently requires GitHub."
+        )
+
+    raise ValueError(
+        "Unsupported project source. Use a local git path, owner/repo, "
+        "git@github.com:owner/repo.git, or https://github.com/owner/repo.git"
+    )
+
+
+def default_project_id(repo: str) -> str:
+    name = repo.split("/", 1)[-1]
+    slug = re.sub(r"[^a-zA-Z0-9._-]+", "-", name).strip("-").lower()
+    return slug or "project"
 
 
 class Registry:
@@ -33,6 +91,44 @@ class Registry:
 
     def list(self) -> list[dict[str, Any]]:
         return [self.projects[key] for key in sorted(self.projects)]
+
+    def add_project(
+        self,
+        source: str,
+        *,
+        project_id: str | None = None,
+        issues_repo: str | None = None,
+        default_branch: str = "main",
+        manifest_path: str = ".orchestrator/project.json",
+    ) -> dict[str, Any]:
+        repo, local_path = github_repo_from_source(source)
+        pid = (project_id or default_project_id(repo)).strip()
+        if not re.fullmatch(r"[A-Za-z0-9._-]+", pid):
+            raise ValueError("Project ID may contain only letters, numbers, dot, underscore and dash")
+        if pid in self.projects:
+            raise ValueError(f"Project ID already exists: {pid}")
+        resolved_issues = (issues_repo or repo).strip()
+        if "/" not in resolved_issues:
+            raise ValueError("issues_repo must be OWNER/REPO")
+
+        raw = json.loads(self.path.read_text(encoding="utf-8"))
+        entry: dict[str, Any] = {
+            "id": pid,
+            "repo": repo,
+            "issues_repo": resolved_issues,
+            "default_branch": (default_branch or "main").strip(),
+            "manifest_path": (manifest_path or ".orchestrator/project.json").strip(),
+            "enabled": True,
+        }
+        if local_path:
+            entry["source_path"] = local_path
+        raw.setdefault("projects", []).append(entry)
+        tmp = self.path.with_suffix(self.path.suffix + ".tmp")
+        tmp.write_text(json.dumps(raw, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        tmp.replace(self.path)
+
+        self.projects[pid] = entry
+        return entry
 
 
 def safe_path(root: Path, rel: str) -> Path:
