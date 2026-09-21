@@ -100,7 +100,11 @@ function renderLifecycleStepper(lc = {}) {
   if (lc.is_rework) {
     banner = '<div class="rework-banner">↺ <b>REWORK</b> · Cần điều chỉnh và làm lại</div>';
   } else if (lc.is_blocked) {
-    banner = '<div class="blocked-banner">⚠️ <b>BLOCKED</b> · Đang bị nghẽn/chờ can thiệp</div>';
+    banner = `
+      <div class="blocked-banner" style="display: flex; justify-content: space-between; align-items: center; gap: 8px;">
+        <span>⚠️ <b>BLOCKED</b> · Đang bị nghẽn/chờ can thiệp</span>
+        <button class="btn btn-sm btn-primary" onclick="retryActiveTask(event)" style="padding: 3px 12px; font-size: 12px; white-space: nowrap; cursor: pointer;">🔄 Thử Lại (Retry)</button>
+      </div>`;
   } else if (lc.stage_index === 4) {
     banner = '<div class="external-gate-banner">⏳ <b>GPT Review</b> · Đang chờ duyệt mã nguồn</div>';
   } else if (lc.waiting_user) {
@@ -360,6 +364,18 @@ async function removeProject(projectId) {
     await refresh();
   } catch (err) {
     showBlock(`Lỗi xóa dự án ${projectId}: ${err.message}`);
+  }
+}
+
+// Retry active task
+async function retryActiveTask(e) {
+  if (e && e.stopPropagation) e.stopPropagation();
+  try {
+    const res = await api('/api/control/retry', { method: 'POST' });
+    alert(res.message || 'Đã gửi lệnh thử lại task (retry) lên GitHub Issue!');
+    await refresh();
+  } catch (err) {
+    alert('Lỗi khi thử lại task: ' + err.message);
   }
 }
 
@@ -662,6 +678,12 @@ async function refresh() {
     modeBadge.innerHTML = `<span class="status-dot"></span> Engine: ${s.paused ? 'TẠM DỪNG' : 'TỰ ĐỘNG'}`;
     const pauseBtn = document.getElementById('btnPauseResume');
     pauseBtn.textContent = s.paused ? '▶ Khởi động' : '⏸ Tạm dừng';
+
+    const retryBtn = document.getElementById('btnRetryActiveTask');
+    if (retryBtn) {
+      const isBlocked = s.active && s.active.status === 'BLOCKED';
+      retryBtn.classList.toggle('hidden', !isBlocked);
+    }
 
     const ghBadge = document.getElementById('githubBadge');
     const auth = s.github_auth || {};

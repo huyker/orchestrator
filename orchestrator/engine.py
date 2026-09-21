@@ -582,9 +582,14 @@ class OrchestratorEngine:
             short,
             "--agent",
             agent["agy_agent"],
-            "--effort",
-            agent.get("effort") or self.settings.agent_effort,
         ]
+        effort_suffixes = ("-high", "-medium", "-low")
+        has_embedded_effort = any(model.lower().endswith(s) for s in effort_suffixes)
+        effort_unsupported = model.lower().startswith("claude-")
+        if not has_embedded_effort and not effort_unsupported:
+            effort = agent.get("effort") or self.settings.agent_effort
+            if effort:
+                args.extend(["--effort", str(effort)])
         code, output, timed_out = self._run_with_heartbeat(
             args,
             cwd=worktree,

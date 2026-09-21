@@ -137,6 +137,36 @@ class AgyModelConfigTests(unittest.TestCase):
                 self.assertIn("--model", captured_args)
                 model_idx = captured_args.index("--model")
                 self.assertEqual(captured_args[model_idx + 1], "gemini-3.8-flash-high")
+                # When model has embedded effort suffix (-high), --effort should NOT be passed
+                self.assertNotIn("--effort", captured_args)
+
+                # Test 2: agent with effort: "medium" and model "gemini-3.8-flash-high"
+                captured_args.clear()
+                agent2 = {"id": "test2", "agy_agent": "03_executor", "effort": "medium"}
+                code2, out2 = engine.run_agent(agent2, "prompt 2", Path(td), 2)
+                self.assertEqual(code2, 0)
+                self.assertIn("--model", captured_args)
+                self.assertEqual(captured_args[captured_args.index("--model") + 1], "gemini-3.8-flash-high")
+                self.assertNotIn("--effort", captured_args)
+
+                # Test 3: Claude model should never have --effort
+                captured_args.clear()
+                agent_claude = {"id": "claude", "agy_agent": "03_executor", "model": "claude-sonnet-4-6", "effort": "medium"}
+                code3, out3 = engine.run_agent(agent_claude, "prompt 3", Path(td), 3)
+                self.assertEqual(code3, 0)
+                self.assertIn("--model", captured_args)
+                self.assertEqual(captured_args[captured_args.index("--model") + 1], "claude-sonnet-4-6")
+                self.assertNotIn("--effort", captured_args)
+
+                # Test 4: Base model without suffix should receive --effort
+                captured_args.clear()
+                agent_base = {"id": "base", "agy_agent": "03_executor", "model": "gemini-3.8-flash", "effort": "low"}
+                code4, out4 = engine.run_agent(agent_base, "prompt 4", Path(td), 4)
+                self.assertEqual(code4, 0)
+                self.assertIn("--model", captured_args)
+                self.assertEqual(captured_args[captured_args.index("--model") + 1], "gemini-3.8-flash")
+                self.assertIn("--effort", captured_args)
+                self.assertEqual(captured_args[captured_args.index("--effort") + 1], "low")
             finally:
                 engine.state.close()
 
