@@ -147,10 +147,10 @@ class SelfUpdater:
                 branch=current_branch,
             )
 
-        status_lines = [
-            line for line in self._git("status", "--porcelain", "--untracked-files=no").splitlines()
-            if line.strip()
-        ]
+        status_raw = self._run(
+            ["git", "status", "--porcelain", "--untracked-files=no"]
+        ).stdout
+        status_lines = [line for line in status_raw.splitlines() if line.strip()]
         registry_rel = self._registry_rel()
         changed_paths = [line[3:].strip().replace("\\", "/") for line in status_lines if len(line) >= 4]
         disallowed = [path for path in changed_paths if not registry_rel or path != registry_rel]
