@@ -31,9 +31,39 @@ class WorkspaceManager:
         return f"https://github.com/{repo}.git"
 
     def repo_dir(self, repo: str, source_path: str | None = None) -> Path:
-        if source_path:
-            return Path(source_path).expanduser().resolve()
-        return self.settings.workspace_root / repo.replace("/", "__")
+        owner, name = repo.split("/", 1)
+        return (self.settings.workspace_root / owner / name).resolve()
+
+    def remote_default_branch(self, root: Path) -> str:
+        proc = subprocess.run(
+            ["git", "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"],
+            cwd=root,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+        if proc.returncode == 0 and proc.stdout.strip().startswith("origin/"):
+            return proc.stdout.strip().split("/", 1)[1]
+
+        proc = subprocess.run(
+            ["git", "remote", "show", "origin"],
+            cwd=root,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            timeout=60,
+        )
+        if proc.returncode == 0:
+            for line in proc.stdout.splitlines():
+                if "HEAD branch:" in line:
+                    value = line.split("HEAD branch:", 1)[1].strip()
+                    if value and value != "(unknown)":
+                        return value
+
+        branch = self.inspect_repo(root)["branch"]
+        if branch != "(detached)":
+            return str(branch)
+        raise RuntimeError(f"Cannot determine default branch for {root}")
 
     def inspect_repo(self, root: Path) -> dict[str, str | bool]:
         top = Path(self.run(["git", "rev-parse", "--show-toplevel"], cwd=root)).resolve()
@@ -65,20 +95,39 @@ class WorkspaceManager:
             "dirty": bool(self.run(["git", "status", "--porcelain"], cwd=top)),
         }
 
-    def sync_project(self, repo: str, default_branch: str, source_path: str | None = None) -> Path:
-        root = self.repo_dir(repo, source_path)
-        if source_path:
-            # A configured local checkout is the authoritative project source.
-            # Read it in place; never checkout/reset the user's working tree.
-            info = self.inspect_repo(root)
-            return Path(str(info["root"]))
-
+    def sync_project(
+        self,
+        repo: str,
+        default_branch: str | None = None,
+        source_path: str | None = None,
+    ) -> Path:
+        root = self.repo_dir(repo)
         if not root.exists():
             root.parent.mkdir(parents=True, exist_ok=True)
             self.run(["git", "clone", self.clone_url(repo), str(root)], timeout=300)
+        elif not (root / ".git").exists():
+            raise RuntimeError(f"Managed project path exists but is not a Git repository: {root}")
+
+        expected_origin = self.clone_url(repo)
+        actual_origin = self.run(["git", "remote", "get-url", "origin"], cwd=root)
+        normalized_actual = actual_origin.removesuffix(".git").replace("https://github.com/", "").replace("git@github.com:", "")
+        if normalized_actual != repo:
+            raise RuntimeError(
+                f"Managed path {root} belongs to {actual_origin}, expected {repo}"
+            )
+
         self.run(["git", "fetch", "origin", "--prune"], cwd=root, timeout=300)
-        self.run(["git", "checkout", default_branch], cwd=root)
-        self.run(["git", "reset", "--hard", f"origin/{default_branch}"], cwd=root)
+        branch = (default_branch or "").strip() or self.remote_default_branch(root)
+
+        remote_exists = subprocess.run(
+            ["git", "show-ref", "--verify", "--quiet", f"refs/remotes/origin/{branch}"],
+            cwd=root,
+        ).returncode == 0
+        if not remote_exists:
+            branch = self.remote_default_branch(root)
+
+        self.run(["git", "checkout", branch], cwd=root)
+        self.run(["git", "pull", "--ff-only", "origin", branch], cwd=root, timeout=300)
         return root
 
     def prepare_task(
@@ -89,12 +138,11 @@ class WorkspaceManager:
         task_id: str,
         source_path: str | None = None,
     ) -> tuple[Path, str]:
-        root = self.repo_dir(repo, source_path)
+        root = self.repo_dir(repo)
         if not root.exists():
-            self.sync_project(repo, base, source_path)
-        # Fetching only updates refs/object data and does not modify the user's
-        # checked-out files, even when root is the configured local source.
-        self.run(["git", "fetch", "origin", "--prune"], cwd=root, timeout=300)
+            self.sync_project(repo, base)
+        else:
+            self.sync_project(repo, base)
 
         safe = re.sub(r"[^a-zA-Z0-9._-]+", "-", task_id).strip("-").lower() or "task"
         branch = f"task/issue-{issue_number}-{safe}"
