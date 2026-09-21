@@ -3,6 +3,7 @@ from __future__ import annotations
 import fnmatch
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -239,9 +240,9 @@ class OrchestratorEngine:
             return self.settings.control_repo
         raise RuntimeError("managed-project issue_repo is required; no legacy ORCH_CONTROL_REPO fallback is configured")
 
-    def event(self, issue: int, event_type: str, *, issue_repo: str | None = None, **payload: Any) -> int:
+    def event(self, issue: int, event_type: str, *, issue_repo: str | None = None, logical_issue_id: str | None = None, **payload: Any) -> int:
         repo = self._issue_repo(issue, issue_repo)
-        logical_issue = f"issue{issue}"
+        logical_issue = logical_issue_id or f"issue{issue}"
         lease = self.state.get_lease()
         if lease and int(lease.get("issue_number", 0)) == int(issue):
             logical_issue = lease.get("payload", {}).get("logical_issue_id") or logical_issue
@@ -512,6 +513,7 @@ class OrchestratorEngine:
         short = f"Read the complete task instructions from {prompt_file} and execute them exactly."
         args = [
             binary,
+            "--dangerously-skip-permissions",
             "--print",
             short,
             "--agent",
@@ -1091,6 +1093,8 @@ class OrchestratorEngine:
 
             for issue in sorted(ready, key=priority):
                 issue_repo = issue["_issue_repo"]
+                canonical_match = re.match(r"^\[(?P<tag>issue\d+|[A-Za-z0-9_.-]+)\]", issue.get("title", ""))
+                logical_id = canonical_match.group("tag") if canonical_match else f"issue{issue['number']}"
                 try:
                     author = ((issue.get("user") or {}).get("login") or "")
                     if author not in self.settings.allowed_authors:
@@ -1099,6 +1103,7 @@ class OrchestratorEngine:
                             int(issue["number"]),
                             "blocked",
                             issue_repo=issue_repo,
+                            logical_issue_id=logical_id,
                             reason=f"unauthorized issue author: {author}",
                         )
                         continue
@@ -1109,14 +1114,13 @@ class OrchestratorEngine:
                             int(issue["number"]),
                             "blocked",
                             issue_repo=issue_repo,
+                            logical_issue_id=logical_id,
                             reason=(
                                 f"task project {task['project']} is not registered to Issue repo {issue_repo}; "
                                 f"allowed={issue['_allowed_projects']}"
                             ),
                         )
                         continue
-                    canonical_match = re.match(r"^\[(?P<tag>issue\d+|[A-Za-z0-9_.-]+)\]", issue.get("title", ""))
-                    logical_id = canonical_match.group("tag") if canonical_match else f"issue{issue['number']}"
                     payload = {
                         "issue_repo": issue_repo,
                         "task_id": task["task_id"],
@@ -1146,6 +1150,7 @@ class OrchestratorEngine:
                             int(issue["number"]),
                             "blocked",
                             issue_repo=issue_repo,
+                            logical_issue_id=logical_id,
                             reason=f"task claim failure: {exc}",
                         )
                     return
