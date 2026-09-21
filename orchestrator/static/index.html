@@ -141,7 +141,7 @@
         <div class="form-group">
           <label for="projectSource">Git project path / URL</label>
           <input id="projectSource" class="form-input" placeholder="E:\Game studio\game  |  git@github.com:huyker/game.git  |  huyker/game">
-          <span class="form-help">Local paths are inspected for origin; orchestrator still works from its own isolated managed clone.</span>
+          <span class="form-help">The selected folder is the project Git repository. Orchestrator reads its .git metadata directly; task execution uses a separate git worktree so your main working tree is not modified.</span>
         </div>
         <div class="form-grid">
           <div class="form-group"><label for="projectId">Project ID <span class="label-muted">(optional)</span></label><input id="projectId" class="form-input" placeholder="gamegit"></div>
