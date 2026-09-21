@@ -51,6 +51,59 @@ class OrchestratorEngine:
         self._project_heads: dict[str, str] = {}
         self._last_sync_at: float | None = None
         self._last_sync_results: list[dict[str, Any]] = []
+        self._github_auth: dict[str, Any] = {
+            "connected": False,
+            "login": None,
+            "name": None,
+            "error": "GitHub authentication not checked yet",
+        }
+
+    # ---------- GitHub authentication ----------
+    def refresh_github_auth(self) -> dict[str, Any]:
+        self._github_auth = self.github.auth_status()
+        self.state.add_event("github_auth", {
+            "connected": self._github_auth.get("connected", False),
+            "login": self._github_auth.get("login"),
+            "error": self._github_auth.get("error"),
+        })
+        return dict(self._github_auth)
+
+    def github_auth_status(self) -> dict[str, Any]:
+        return dict(self._github_auth)
+
+    def connect_github_token(self, token: str, env_path: Path = Path(".env")) -> dict[str, Any]:
+        token = token.strip()
+        if not token:
+            raise ValueError("GitHub token is empty")
+        previous = self.github.token
+        self.github.set_token(token)
+        status = self.github.auth_status()
+        if not status.get("connected"):
+            self.github.set_token(previous)
+            raise RuntimeError(status.get("error") or "GitHub authentication failed")
+
+        lines: list[str] = []
+        if env_path.is_file():
+            lines = env_path.read_text(encoding="utf-8").splitlines()
+        replaced = False
+        output: list[str] = []
+        for line in lines:
+            if line.strip().startswith("GITHUB_TOKEN="):
+                output.append(f"GITHUB_TOKEN={token}")
+                replaced = True
+            else:
+                output.append(line)
+        if not replaced:
+            output.insert(0, f"GITHUB_TOKEN={token}")
+        env_path.write_text("\n".join(output).rstrip() + "\n", encoding="utf-8")
+        try:
+            env_path.chmod(0o600)
+        except OSError:
+            pass
+        os.environ["GITHUB_TOKEN"] = token
+        self._github_auth = status
+        self.state.add_event("github_connected", {"login": status.get("login")})
+        return dict(status)
 
     # ---------- communication ----------
     def _issue_repo(self, issue_number: int, explicit: str | None = None) -> str:
@@ -89,6 +142,8 @@ class OrchestratorEngine:
     def ensure_labels(self) -> None:
         if not self.state.is_dashboard_verified():
             raise RuntimeError("Dashboard bootstrap has not been verified; managed-project Issue mutation is disabled")
+        if not self._github_auth.get("connected"):
+            raise RuntimeError("GitHub is not connected; managed-project Issue mutation is disabled")
         # Orchestrator itself is developed directly through code review/merge.
         # Lifecycle labels belong only to managed-project Issue repositories.
         repos = {project["issues_repo"] for project in self.registry.list()}
@@ -794,6 +849,8 @@ class OrchestratorEngine:
         try:
             if not self.state.is_dashboard_verified():
                 return
+            if not self._github_auth.get("connected"):
+                return
             if self.state.is_paused():
                 return
             lease = self.state.get_lease()
@@ -887,9 +944,13 @@ class OrchestratorEngine:
     # ---------- dashboard operations ----------
     def snapshot(self) -> dict[str, Any]:
         dashboard_bootstrap = self.state.dashboard_verification()
+        github_auth = self.github_auth_status()
         if not dashboard_bootstrap["verified"]:
             queue = []
             queue_error = "dashboard bootstrap not verified; managed-project Issue queue is disabled"
+        elif not github_auth.get("connected"):
+            queue = []
+            queue_error = "GitHub not connected; managed-project Issue queue is disabled"
         else:
             try:
                 queue = []
@@ -930,6 +991,7 @@ class OrchestratorEngine:
             "instance_id": self.instance_id,
             "paused": self.state.is_paused(),
             "dashboard_bootstrap": dashboard_bootstrap,
+            "github_auth": github_auth,
             "auto_sync": {
                 "last_sync_at": self._last_sync_at,
                 "last_results": self._last_sync_results,
@@ -952,6 +1014,8 @@ class OrchestratorEngine:
     def request_retry(self) -> None:
         if not self.state.is_dashboard_verified():
             raise RuntimeError("Dashboard bootstrap has not been verified; Issue operations are disabled")
+        if not self._github_auth.get("connected"):
+            raise RuntimeError("GitHub is not connected; Issue operations are disabled")
         lease = self.state.get_lease()
         if not lease:
             raise RuntimeError("No active task")
