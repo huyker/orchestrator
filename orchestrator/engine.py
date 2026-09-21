@@ -49,24 +49,40 @@ class OrchestratorEngine:
         self._tick_lock = threading.Lock()
 
     # ---------- communication ----------
-    def event(self, issue: int, event_type: str, **payload: Any) -> int:
+    def _issue_repo(self, issue_number: int, explicit: str | None = None) -> str:
+        if explicit:
+            return explicit
+        lease = self.state.get_lease()
+        if lease and int(lease["issue_number"]) == int(issue_number):
+            return str(lease["payload"].get("issue_repo") or self.settings.control_repo)
+        return self.settings.control_repo
+
+    def event(self, issue: int, event_type: str, *, issue_repo: str | None = None, **payload: Any) -> int:
+        repo = self._issue_repo(issue, issue_repo)
         body = {
             "schema": "orch.event.v1",
             "type": event_type,
             "instance_id": self.instance_id,
+            "issue_repo": repo,
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             **payload,
         }
-        self.state.add_event(event_type, {"issue_number": issue, **payload})
+        self.state.add_event(event_type, {"issue_repo": repo, "issue_number": issue, **payload})
         created = self.github.comment(
-            self.settings.control_repo,
+            repo,
             issue,
             "```orchestrator-event\n" + json.dumps(body, ensure_ascii=False, indent=2) + "\n```",
         )
         return int(created["id"])
 
-    def set_label(self, issue: int, label: str) -> None:
-        self.github.set_lifecycle_label(self.settings.control_repo, issue, label)
+    def set_label(self, issue: int, label: str, issue_repo: str | None = None) -> None:
+        self.github.set_lifecycle_label(self._issue_repo(issue, issue_repo), issue, label)
+
+    def ensure_labels(self) -> None:
+        repos = {self.settings.control_repo}
+        repos.update(project["issues_repo"] for project in self.registry.list())
+        for repo in sorted(repos):
+            self.github.ensure_labels(repo)
 
     def _find_command(
         self,
@@ -331,7 +347,7 @@ class OrchestratorEngine:
 
     # ---------- task lifecycle ----------
     def _load_issue_task(self, issue_number: int) -> tuple[dict, dict, str]:
-        issue = self.github.get_issue(self.settings.control_repo, issue_number)
+        issue = self.github.get_issue(self._issue_repo(issue_number), issue_number)
         author = ((issue.get("user") or {}).get("login") or "")
         if author not in self.settings.allowed_authors:
             raise PermissionError(f"unauthorized issue author: {author}")
@@ -386,7 +402,7 @@ class OrchestratorEngine:
         return None
 
     def _discussion(self, issue_number: int) -> tuple[list[dict], str]:
-        comments = self.github.comments(self.settings.control_repo, issue_number)
+        comments = self.github.comments(self._issue_repo(issue_number), issue_number)
         rendered = "\n\n".join(
             f"[comment:{row.get('id')}] @{((row.get('user') or {}).get('login') or 'unknown')}: {row.get('body') or ''}"
             for row in comments[-100:]
@@ -579,7 +595,7 @@ class OrchestratorEngine:
         if not ok:
             return
         status = lease["status"]
-        comments = self.github.comments(self.settings.control_repo, issue_number)
+        comments = self.github.comments(self._issue_repo(issue_number), issue_number)
         revision = int(payload["revision"])
         after = int(payload.get("command_after_comment_id", 0))
 
@@ -707,7 +723,7 @@ class OrchestratorEngine:
             if pr.get("merged_at"):
                 self.event(issue_number, "complete", merged_pr=pr["html_url"])
                 self.set_label(issue_number, LABEL_DONE)
-                self.github.close_issue(self.settings.control_repo, issue_number)
+                self.github.close_issue(self._issue_repo(issue_number), issue_number)
                 self.state.release(self.instance_id)
             elif pr.get("state") == "closed":
                 self._block(lease, "PR closed without merge")
@@ -746,23 +762,52 @@ class OrchestratorEngine:
                 self._handle_active(lease)
                 return
 
-            ready = self.github.list_ready_issues(self.settings.control_repo)
-            def priority(issue: dict) -> tuple[int, int]:
+            ready: list[dict[str, Any]] = []
+            issue_sources: dict[str, set[str]] = {}
+            for project in self.registry.list():
+                issue_sources.setdefault(project["issues_repo"], set()).add(project["id"])
+            for issue_repo, project_ids in issue_sources.items():
+                for row in self.github.list_ready_issues(issue_repo):
+                    issue = dict(row)
+                    issue["_issue_repo"] = issue_repo
+                    issue["_allowed_projects"] = sorted(project_ids)
+                    ready.append(issue)
+
+            def priority(issue: dict) -> tuple[int, int, str]:
                 try:
                     task = parse_task(issue.get("body") or "")
-                    return int(task.get("priority", 9)), int(issue["number"])
+                    return int(task.get("priority", 9)), int(issue["number"]), issue["_issue_repo"]
                 except Exception:
-                    return 99, int(issue["number"])
+                    return 99, int(issue["number"]), issue["_issue_repo"]
 
             for issue in sorted(ready, key=priority):
+                issue_repo = issue["_issue_repo"]
                 try:
                     author = ((issue.get("user") or {}).get("login") or "")
                     if author not in self.settings.allowed_authors:
-                        self.set_label(int(issue["number"]), LABEL_BLOCKED)
-                        self.event(int(issue["number"]), "blocked", reason=f"unauthorized issue author: {author}")
+                        self.set_label(int(issue["number"]), LABEL_BLOCKED, issue_repo)
+                        self.event(
+                            int(issue["number"]),
+                            "blocked",
+                            issue_repo=issue_repo,
+                            reason=f"unauthorized issue author: {author}",
+                        )
                         continue
                     task = parse_task(issue.get("body") or "")
+                    if task["project"] not in issue["_allowed_projects"]:
+                        self.set_label(int(issue["number"]), LABEL_BLOCKED, issue_repo)
+                        self.event(
+                            int(issue["number"]),
+                            "blocked",
+                            issue_repo=issue_repo,
+                            reason=(
+                                f"task project {task['project']} is not registered to Issue repo {issue_repo}; "
+                                f"allowed={issue['_allowed_projects']}"
+                            ),
+                        )
+                        continue
                     payload = {
+                        "issue_repo": issue_repo,
                         "task_id": task["task_id"],
                         "revision": int(task["revision"]),
                         "contract_hash": canonical_task_hash(task),
@@ -784,8 +829,13 @@ class OrchestratorEngine:
                     if lease and lease["instance_id"] == self.instance_id:
                         self._block(lease, f"runtime failure: {exc}")
                     else:
-                        self.set_label(int(issue["number"]), LABEL_BLOCKED)
-                        self.event(int(issue["number"]), "blocked", reason=f"task claim failure: {exc}")
+                        self.set_label(int(issue["number"]), LABEL_BLOCKED, issue_repo)
+                        self.event(
+                            int(issue["number"]),
+                            "blocked",
+                            issue_repo=issue_repo,
+                            reason=f"task claim failure: {exc}",
+                        )
                     return
         finally:
             self._tick_lock.release()
@@ -793,16 +843,22 @@ class OrchestratorEngine:
     # ---------- dashboard operations ----------
     def snapshot(self) -> dict[str, Any]:
         try:
-            queue = [
-                {
-                    "number": row["number"],
-                    "title": row["title"],
-                    "url": row.get("html_url"),
-                    "labels": [label["name"] for label in row.get("labels", [])],
-                }
-                for row in self.github.list_open_orchestrator_issues(self.settings.control_repo)
-                if any(label.get("name", "").startswith("orch:") for label in row.get("labels", []))
-            ]
+            queue = []
+            sources: dict[str, list[str]] = {}
+            for project in self.registry.list():
+                sources.setdefault(project["issues_repo"], []).append(project["id"])
+            for issue_repo, project_ids in sorted(sources.items()):
+                for row in self.github.list_open_orchestrator_issues(issue_repo):
+                    if not any(label.get("name", "").startswith("orch:") for label in row.get("labels", [])):
+                        continue
+                    queue.append({
+                        "issue_repo": issue_repo,
+                        "project_ids": sorted(project_ids),
+                        "number": row["number"],
+                        "title": row["title"],
+                        "url": row.get("html_url"),
+                        "labels": [label["name"] for label in row.get("labels", [])],
+                    })
             queue_error = None
         except Exception as exc:
             queue, queue_error = [], str(exc)
@@ -830,7 +886,7 @@ class OrchestratorEngine:
             raise RuntimeError("No active task")
         payload = lease["payload"]
         self.github.post_command(
-            self.settings.control_repo,
+            self._issue_repo(lease["issue_number"]),
             lease["issue_number"],
             {"command": "retry", "revision": int(payload["revision"]), "source": "dashboard"},
         )
