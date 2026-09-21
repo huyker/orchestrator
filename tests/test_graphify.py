@@ -19,7 +19,7 @@ import json
 import sys
 from pathlib import Path
 root = Path.cwd()
-(root / 'graphify-calls.log').open('a', encoding='utf-8').write(json.dumps(sys.argv[1:]) + '\n')
+(root / 'graphify-calls.log').open('a', encoding='utf-8').write(json.dumps(sys.argv[1:]) + '\\n')
 args = sys.argv[1:]
 if args and args[0] == 'query':
     print('GRAPH CONTEXT: Foundation -> RunePlatform -> Hero')
