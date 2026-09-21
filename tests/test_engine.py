@@ -25,8 +25,14 @@ class EngineTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             engine = OrchestratorEngine(settings_for(td))
             engine.github.list_ready_issues = lambda repo: (_ for _ in ()).throw(AssertionError("Issue queue must not be read"))
+            engine.github.list_open_orchestrator_issues = lambda repo: (_ for _ in ()).throw(AssertionError("Issue status queue must not be read"))
             engine.tick()
+            snapshot = engine.snapshot()
             self.assertFalse(engine.state.is_dashboard_verified())
+            self.assertEqual(snapshot["issues"], [])
+            self.assertIn("dashboard bootstrap not verified", snapshot["issues_error"])
+            with self.assertRaises(RuntimeError):
+                engine.ensure_labels()
 
     def test_question_answer_binding_and_replay_protection(self):
         with tempfile.TemporaryDirectory() as td:
