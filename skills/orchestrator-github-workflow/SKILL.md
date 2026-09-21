@@ -25,6 +25,13 @@ If GitHub access is unavailable, say that current GitHub state cannot be verifie
 
 One task = one canonical GitHub Issue.
 
+Every task has a stable logical Issue ID in two places and they MUST match:
+
+- Issue title: `[issue<ID>] <short title>`
+- task contract field: `"issue_id": "issue<ID>"`
+
+GitHub Issue number is transport metadata only and MUST NOT be used in dependency conditions.
+
 Issue title:
 
 ```text
@@ -73,9 +80,14 @@ When the user asks ChatGPT to hand work to AGY/local Orchestrator:
 4. Create exactly one canonical Issue with:
    - title `[issueN] <title>`;
    - one `orchestrator-task` JSON block;
-   - lifecycle label `orch:ready`.
-5. Set `review.reviewer` explicitly. Use `GPT` when ChatGPT is intended to perform final external review.
-6. Do not create implementation branches or PRs on ChatGPT's behalf unless the user specifically asks; local Orchestrator/AGY owns task execution.
+   - `"issue_id": "issueN"`;
+   - `"condition": []` when there are no prerequisites, or a list of prerequisite logical Issue IDs such as `["issue1","issue2"]`.
+5. Resolve `condition` against the current canonical Issues in the same managed project's `issues_repo`:
+   - if `condition == []`, initial lifecycle label is `orch:ready`;
+   - if every dependency is already satisfied, initial lifecycle label is `orch:ready`;
+   - otherwise initial lifecycle label is `orch:waiting-condition`.
+6. Set `review.reviewer` explicitly. Use `GPT` when ChatGPT is intended to perform final external review.
+7. Do not create implementation branches or PRs on ChatGPT's behalf unless the user specifically asks; local Orchestrator/AGY owns task execution.
 
 A task contract must include at least:
 
@@ -83,6 +95,8 @@ A task contract must include at least:
 {
   "schema_version": 1,
   "revision": 1,
+  "issue_id": "issueN",
+  "condition": [],
   "task_id": "PROJECT-...",
   "project": "<registry id>",
   "target_repo": "<owner/repo>",
@@ -113,6 +127,40 @@ A task contract must include at least:
 ```
 
 Do not mutate the task body without incrementing `revision`.
+
+
+## Task dependency conditions
+
+`condition` is a machine-readable prerequisite list of logical Issue IDs.
+
+Examples:
+
+```json
+"condition": []
+```
+
+means the task has no prerequisites and may enter `orch:ready` immediately.
+
+```json
+"condition": ["issue1", "issue2"]
+```
+
+means the task MUST NOT be claimed until both `issue1` and `issue2` are successfully complete.
+
+Rules:
+
+1. Values are logical IDs such as `issue7`, never GitHub Issue numbers such as `#42`.
+2. Dependencies are resolved inside the same managed project's `issues_repo` unless a future schema explicitly introduces cross-project references.
+3. Every referenced dependency must exist exactly once and have a canonical title/contract whose `issue_id` matches.
+4. Self-dependencies and dependency cycles are invalid and must fail closed.
+5. A dependency is satisfied only when the referenced task has reached successful terminal state: canonical Issue closed as completed, `orch:done`/valid `done_byORCH` evidence present, and any required PR is merged.
+6. `orch:approved`, `orch:gpt-review`, `orch:user-gate`, or merely having a passing local review do NOT satisfy a dependency.
+7. If any dependency is unresolved, failed, cancelled, blocked, or not successfully merged/done, the dependent task is not claimable.
+8. Orchestrator must reevaluate conditions on every reconciliation. When the last dependency becomes satisfied, it automatically moves the task from `orch:waiting-condition` to `orch:ready` and may claim it immediately when worker capacity is available.
+9. A task with `condition: []` is independently schedulable and may run in parallel with other independent ready tasks.
+10. Changing `condition` is a task-contract mutation and requires incrementing `revision` plus an `[issueX_update_byGPT]` event.
+
+When creating a batch, ChatGPT should encode ordering in `condition`, not only in prose. Independent tasks should receive `condition: []`.
 
 ## Event naming
 
@@ -301,7 +349,9 @@ When checking status or recovering context:
 - ignore duplicate/replayed structured events by `event_id`;
 - fail closed on same-revision task-body mutation;
 - closed Issues are not executable;
-- merged PR + open canonical Issue should reconcile toward DONE.
+- merged PR + open canonical Issue should reconcile toward DONE;
+- recompute every task's `condition` satisfaction during reconciliation;
+- automatically transition `orch:waiting-condition` → `orch:ready` when all dependencies become successfully DONE.
 
 ## Safety against stale context
 
