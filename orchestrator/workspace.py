@@ -30,7 +30,7 @@ class WorkspaceManager:
             return f"git@github.com:{repo}.git"
         return f"https://github.com/{repo}.git"
 
-    def repo_dir(self, repo: str, source_path: str | None = None) -> Path:
+    def repo_dir(self, repo: str) -> Path:
         owner, name = repo.split("/", 1)
         return (self.settings.workspace_root / owner / name).resolve()
 
@@ -99,7 +99,6 @@ class WorkspaceManager:
         self,
         repo: str,
         default_branch: str | None = None,
-        source_path: str | None = None,
     ) -> Path:
         root = self.repo_dir(repo)
         if not root.exists():
@@ -136,7 +135,6 @@ class WorkspaceManager:
         base: str,
         issue_number: int,
         task_id: str,
-        source_path: str | None = None,
     ) -> tuple[Path, str]:
         root = self.repo_dir(repo)
         if not root.exists():
