@@ -124,6 +124,25 @@ There is no Add Folder workflow and no per-project local path field in the regis
 
 The registry stores repository identity and project metadata; filesystem placement comes only from `ORCH_MANAGED_ROOT`.
 
+## Reusable ChatGPT workflow skill
+
+The ChatGPT ↔ Orchestrator ↔ AGY task/review workflow is packaged as a reusable skill:
+
+```text
+skills/orchestrator-github-workflow/SKILL.md
+```
+
+It defines cross-project behavior for:
+
+- creating canonical `[issueN]` tasks;
+- answering AGY questions in the same Issue;
+- `/review` across every registered managed project;
+- binding GPT review to exact revision / review cycle / PR HEAD SHA;
+- same-Issue / same-branch / same-PR rework;
+- user gates, retries and reconciliation.
+
+The skill always reloads the current `projects.json` and the current communication protocol from GitHub rather than trusting stale chat context.
+
 ## Orchestrator self update
 
 After the one-time version containing this feature is pulled, `python app.py` keeps the orchestrator itself current automatically.
