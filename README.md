@@ -4,7 +4,7 @@ Local multi-project control center for the workflow:
 
 **GPT / User → GitHub Issue → local orchestrator → project agent → PR → GPT review → merge**
 
-`huyker/orchestrator` is generic. Project-specific knowledge remains in project repos such as `huyker/game`.
+`huyker/orchestrator` is generic. Each managed project owns its own Issue queue, rules, plans, agent/task profiles, source and PRs. For GameGit, both task Issues and implementation PRs live in private `huyker/game`.
 
 ## What this service owns
 
@@ -32,7 +32,7 @@ It does **not** own GameGit product plans/rules/assets. Those stay in `huyker/ga
 - Git
 - SSH access to every private target repo, or use HTTPS transport
 - local `agy` command available for Antigravity agent execution
-- GitHub token with access to the control repo and target project repos
+- GitHub token with access to the orchestrator admin repo and every managed project's configured Issue/code repo
 
 ### GitHub token permissions
 
@@ -44,6 +44,7 @@ For a fine-grained GitHub token, grant at least:
 - Metadata: Read
 
 **target projects such as `huyker/game`**
+- Issues: Read & Write
 - Contents: Read & Write
 - Pull requests: Read & Write
 - Metadata: Read
@@ -110,13 +111,13 @@ Manual update:
 issue-orchestrator graphify-update gamegit
 ```
 
-Graphify remains advisory. It cannot replace the Issue task contract, project rules or acceptance checks.
+Graphify remains advisory. It cannot replace the project Issue task contract, project rules or acceptance checks.
 
 ---
 
 ## 4. First run
 
-Create required lifecycle labels in the control repo:
+Create required lifecycle labels in the orchestrator admin repo **and every registered project's `issues_repo`**:
 
 ```bash
 issue-orchestrator bootstrap-labels
@@ -214,6 +215,7 @@ issue-orchestrator status
     {
       "id": "gamegit",
       "repo": "huyker/game",
+      "issues_repo": "huyker/game",
       "default_branch": "main",
       "manifest_path": ".orchestrator/project.json",
       "enabled": true
@@ -222,7 +224,7 @@ issue-orchestrator status
 }
 ```
 
-To add another project, register it here and add a compatible `.orchestrator/project.json` to that project repo. Core orchestrator code should not need project-specific changes.
+`issues_repo` is where GPT/local/reviewer task communication lives. It defaults to `repo`, so private projects keep their task contracts/Q&A private in the same repository. To add another project, register it here and add a compatible `.orchestrator/project.json` to that project repo. Core orchestrator code should not need project-specific changes.
 
 ---
 
@@ -264,7 +266,7 @@ The target repo owns its own:
 
 ## 8. Create a task
 
-Create an Issue in `huyker/orchestrator`, add label `orch:ready`, and use exactly one task block:
+Create the Issue in the selected project's configured `issues_repo` (for GameGit: `huyker/game`), add label `orch:ready`, and use exactly one task block:
 
 ```orchestrator-task
 {
