@@ -15,9 +15,9 @@ Generic local control plane. It owns no GameGit product logic.
 
 Components:
 
-- **GitHub client** — Issue queue, comments/events, labels, PR metadata;
+- **GitHub client** — aggregates per-project Issue queues, comments/events, labels and PR metadata;
 - **State store** — atomic single-task lease, heartbeat, command de-duplication, event history;
-- **Project registry** — maps a project id to a GitHub repository + manifest;
+- **Project registry** — maps a project id to its code repository, Issue repository and manifest;
 - **Project catalog loader** — loads project-owned plans, task profiles and agent profiles;
 - **Workspace manager** — clone/fetch/worktree/branch/PR handoff;
 - **Graphify adapter** — optional codebase intelligence/context provider;
@@ -45,8 +45,9 @@ It does not own active task queue/state files.
 GPT/User
    │
    ▼
-GitHub Issue in orchestrator repo
-(task contract + Q&A + events + review decision)
+GitHub Issue in managed project's `issues_repo`
+(e.g. private `huyker/game` for GameGit;
+task contract + Q&A + events + review decision)
    │
    ▼
 Local Orchestrator
@@ -92,3 +93,12 @@ Graphify can never activate work or override an Issue contract.
 - protected control files changed → deterministic acceptance fails;
 - required user gate missing → task fails closed;
 - hanging named test → timeout terminates test and records evidence.
+
+
+## Issue ownership
+
+The orchestrator does not centralize all project tasks in its own public repository.
+
+Each registry entry declares `issues_repo` (defaulting to `repo`). The scheduler aggregates `orch:ready` Issues across those repositories and verifies that the Issue task's `project` matches the registry entry for that Issue source.
+
+This keeps private-project requirements, Q&A and review decisions inside the private project repository while preserving one local sequential scheduler across all projects.
