@@ -60,6 +60,10 @@ class ProjectIssueRoutingTests(unittest.TestCase):
             engine._handle_active = lambda lease: captured.update(lease)
 
             engine.tick()
+            self.assertEqual(seen_repos, [])
+
+            engine.state.mark_dashboard_verified("http://127.0.0.1:8766")
+            engine.tick()
 
             self.assertEqual(seen_repos, ["huyker/game"])
             self.assertEqual(captured["issue_number"], 7)
