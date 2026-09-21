@@ -22,6 +22,16 @@ class StateStore:
         self.db.execute("INSERT OR IGNORE INTO runtime(singleton, paused) VALUES(1,0)")
         self.db.execute(
             """
+            CREATE TABLE IF NOT EXISTS bootstrap (
+              singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+              dashboard_verified_at REAL,
+              dashboard_address TEXT
+            )
+            """
+        )
+        self.db.execute("INSERT OR IGNORE INTO bootstrap(singleton,dashboard_verified_at,dashboard_address) VALUES(1,NULL,NULL)")
+        self.db.execute(
+            """
             CREATE TABLE IF NOT EXISTS lease (
               singleton INTEGER PRIMARY KEY CHECK(singleton=1),
               instance_id TEXT NOT NULL,
@@ -166,6 +176,26 @@ class StateStore:
     def is_paused(self) -> bool:
         row = self.db.execute("SELECT paused FROM runtime WHERE singleton=1").fetchone()
         return bool(row and row[0])
+
+    def mark_dashboard_verified(self, address: str) -> None:
+        with self._lock:
+            self.db.execute(
+                "UPDATE bootstrap SET dashboard_verified_at=?, dashboard_address=? WHERE singleton=1",
+                (time.time(), address),
+            )
+
+    def dashboard_verification(self) -> dict[str, Any]:
+        row = self.db.execute(
+            "SELECT dashboard_verified_at,dashboard_address FROM bootstrap WHERE singleton=1"
+        ).fetchone()
+        return {
+            "verified": bool(row and row[0]),
+            "verified_at": row[0] if row else None,
+            "address": row[1] if row else None,
+        }
+
+    def is_dashboard_verified(self) -> bool:
+        return bool(self.dashboard_verification()["verified"])
 
     def add_event(self, event_type: str, payload: dict[str, Any]) -> None:
         with self._lock:
