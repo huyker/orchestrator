@@ -73,6 +73,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 status = self.engine.connect_github_token(str(payload.get("token") or ""))
                 self._json({"ok": True, "github_auth": status})
                 return
+            if route == "/api/projects/inspect":
+                payload = self._read_json()
+                inspection = self.engine.inspect_managed_project_source(
+                    str(payload.get("source") or "")
+                )
+                self._json({"ok": True, "inspection": inspection})
+                return
             if route == "/api/projects/add":
                 payload = self._read_json()
                 entry = self.engine.add_managed_project(
