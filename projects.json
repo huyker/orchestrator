@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "projects": [
+    {
+      "id": "gamegit",
+      "repo": "huyker/game",
+      "default_branch": "main",
+      "manifest_path": ".orchestrator/project.json",
+      "enabled": true
+    }
+  ]
+}
