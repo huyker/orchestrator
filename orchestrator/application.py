@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import subprocess
+import sys
 import threading
 import time
 import webbrowser
@@ -9,6 +11,7 @@ from pathlib import Path
 from .dashboard import make_server, verify_dashboard
 from .engine import OrchestratorEngine
 from .models import Settings, discover_github_token
+from .self_update import SelfUpdater
 
 
 def load_env(path: Path = Path(".env")) -> None:
@@ -30,6 +33,15 @@ class AllInOneApplication:
         self.projects_ready = threading.Event()
         self.sync_interval = max(5, int(os.getenv("ORCH_SYNC_INTERVAL", "15")))
         self.open_browser = os.getenv("ORCH_OPEN_BROWSER", "1").strip().lower() not in {"0", "false", "no", "off"}
+        self.self_update_enabled = os.getenv("ORCH_SELF_UPDATE", "1").strip().lower() not in {"0", "false", "no", "off"}
+        self.self_update_interval = max(10, int(os.getenv("ORCH_SELF_UPDATE_INTERVAL", "15")))
+        self.restart_requested = threading.Event()
+        self.self_updater = SelfUpdater(
+            Path(__file__).resolve().parents[1],
+            registry_file=settings.registry_file,
+            remote=os.getenv("ORCH_SELF_UPDATE_REMOTE", "origin").strip() or "origin",
+            branch=os.getenv("ORCH_SELF_UPDATE_BRANCH", "main").strip() or "main",
+        )
 
     def _auth_forever(self) -> None:
         while not self.stop.is_set():
@@ -42,6 +54,33 @@ class AllInOneApplication:
             except Exception as exc:
                 self.engine.state.add_event("github_auth_error", {"error": str(exc)})
             self.stop.wait(10)
+
+    def _self_update_forever(self) -> None:
+        if not self.self_update_enabled:
+            self.engine.set_self_update_status({
+                "state": "disabled",
+                "message": "Automatic orchestrator self update is disabled",
+                "checked_at": time.time(),
+            })
+            return
+        while not self.stop.is_set():
+            try:
+                status = self.self_updater.check_and_apply(
+                    active_task=bool(self.engine.state.get_lease())
+                )
+                self.engine.set_self_update_status(status)
+                if status.get("state") == "updated":
+                    self.engine.state.add_event("orchestrator_self_updated", status)
+                    self.restart_requested.set()
+                    self.stop.set()
+                    return
+            except Exception as exc:
+                self.engine.set_self_update_status({
+                    "state": "error",
+                    "message": str(exc),
+                    "checked_at": time.time(),
+                })
+            self.stop.wait(self.self_update_interval)
 
     def _sync_forever(self) -> None:
         while not self.stop.is_set():
@@ -115,6 +154,11 @@ class AllInOneApplication:
                     pass
 
             threading.Thread(
+                target=self._self_update_forever,
+                daemon=True,
+                name="orchestrator-self-update",
+            ).start()
+            threading.Thread(
                 target=self._auth_forever,
                 daemon=True,
                 name="orchestrator-github-auth",
@@ -130,7 +174,7 @@ class AllInOneApplication:
                 name="orchestrator-worker",
             ).start()
 
-            while server_thread.is_alive():
+            while server_thread.is_alive() and not self.stop.is_set():
                 server_thread.join(timeout=1)
         except KeyboardInterrupt:
             pass
@@ -138,9 +182,21 @@ class AllInOneApplication:
             self.stop.set()
             server.shutdown()
             server.server_close()
+        return self.restart_requested.is_set()
 
 
 def run() -> None:
     load_env()
     settings = Settings.from_env()
-    AllInOneApplication(settings).run()
+    app = AllInOneApplication(settings)
+    restart = app.run()
+    if restart:
+        root = Path(__file__).resolve().parents[1]
+        env = os.environ.copy()
+        # Keep the existing dashboard tab; the restarted app will bind the same URL.
+        env["ORCH_OPEN_BROWSER"] = "0"
+        subprocess.Popen(
+            [sys.executable, str(root / "app.py")],
+            cwd=root,
+            env=env,
+        )
