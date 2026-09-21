@@ -61,6 +61,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if route == "/api/status":
             self._json(self.engine.snapshot())
             return
+        if route == "/api/config/agy-models":
+            self._json({
+                "current": self.engine.get_agy_model(),
+                "available": self.engine.get_available_agy_models(),
+            })
+            return
         self._json({"error": "not found"}, 404)
 
     def do_POST(self) -> None:
@@ -136,6 +142,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
             if route == "/api/control/retry":
                 self.engine.request_retry()
                 self._json({"ok": True, "message": "retry command posted to active GitHub Issue"})
+                return
+            if route == "/api/config/agy-model":
+                payload = self._read_json()
+                model = str(payload.get("model") or "").strip()
+                if not model:
+                    raise ValueError("Model identifier cannot be empty")
+                current = self.engine.set_agy_model(model)
+                self._json({"ok": True, "model": current})
                 return
             prefix = "/api/projects/"
             suffix_graphify = "/graphify/update"

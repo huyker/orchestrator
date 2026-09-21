@@ -38,6 +38,24 @@ from .state import StateStore
 from .workspace import WorkspaceManager
 
 
+DEFAULT_AGY_MODELS: list[dict[str, Any]] = [
+    {"id": "gemini-3.8-flash-high", "name": "Gemini 3.8 Flash (High)", "default": True},
+    {"id": "gemini-3.8-flash-medium", "name": "Gemini 3.8 Flash (Medium)"},
+    {"id": "gemini-3.8-flash-low", "name": "Gemini 3.8 Flash (Low)"},
+    {"id": "gemini-3.7-flash-high", "name": "Gemini 3.7 Flash (High)"},
+    {"id": "gemini-3.7-flash-medium", "name": "Gemini 3.7 Flash (Medium)"},
+    {"id": "gemini-3.7-flash-low", "name": "Gemini 3.7 Flash (Low)"},
+    {"id": "gemini-3.6-flash-high", "name": "Gemini 3.6 Flash (High)"},
+    {"id": "gemini-3.6-flash-medium", "name": "Gemini 3.6 Flash (Medium)"},
+    {"id": "gemini-3.6-flash-low", "name": "Gemini 3.6 Flash (Low)"},
+    {"id": "gemini-3.1-pro-high", "name": "Gemini 3.1 Pro (High)"},
+    {"id": "gemini-3.1-pro-low", "name": "Gemini 3.1 Pro (Low)"},
+    {"id": "claude-sonnet-4-6", "name": "Claude Sonnet 4.6 (Thinking)"},
+    {"id": "claude-opus-4-6-thinking", "name": "Claude Opus 4.6 (Thinking)"},
+    {"id": "gpt-oss-120b-medium", "name": "GPT-OSS 120B (Medium)"},
+]
+
+
 class OrchestratorEngine:
     def __init__(self, settings: Settings):
         self.settings = settings
@@ -49,6 +67,9 @@ class OrchestratorEngine:
         self.graphify = GraphifyAdapter()
         self._tick_lock = threading.Lock()
         self._sync_lock = threading.Lock()
+        self._models_lock = threading.Lock()
+        self._available_models: list[dict[str, Any]] = list(DEFAULT_AGY_MODELS)
+        self._models_refresh_started = False
         self._project_heads: dict[str, str] = {}
         self._last_sync_at: float | None = None
         self._last_sync_results: list[dict[str, Any]] = []
@@ -63,6 +84,46 @@ class OrchestratorEngine:
             "message": "Self updater not checked yet",
             "checked_at": None,
         }
+
+    def _refresh_agy_models_bg(self) -> None:
+        binary = shutil.which(self.settings.agy_bin)
+        if not binary:
+            return
+        try:
+            proc = subprocess.run([binary, "models"], capture_output=True, text=True, timeout=10)
+            if proc.returncode == 0 and proc.stdout:
+                models_dict = {m["id"]: dict(m) for m in DEFAULT_AGY_MODELS}
+                for line in proc.stdout.splitlines():
+                    line = line.strip()
+                    if not line or line.startswith("Fetching") or "\t" not in line:
+                        continue
+                    parts = line.split("\t", 1)
+                    mid = parts[0].strip()
+                    mname = parts[1].strip() if len(parts) > 1 else mid
+                    if mid not in models_dict:
+                        models_dict[mid] = {"id": mid, "name": mname}
+                with self._models_lock:
+                    self._available_models = list(models_dict.values())
+        except Exception:
+            pass
+
+    def get_available_agy_models(self) -> list[dict[str, Any]]:
+        with self._models_lock:
+            if not self._models_refresh_started:
+                self._models_refresh_started = True
+                threading.Thread(target=self._refresh_agy_models_bg, daemon=True).start()
+            return list(self._available_models)
+
+    def get_agy_model(self) -> str:
+        return self.state.get_config("agy_model") or getattr(self.settings, "agy_model", "gemini-3.8-flash-high") or "gemini-3.8-flash-high"
+
+    def set_agy_model(self, model: str) -> str:
+        clean = str(model or "").strip()
+        if not clean:
+            raise ValueError("Model identifier cannot be empty")
+        self.state.set_config("agy_model", clean)
+        self.state.add_event("agy_model_changed", {"model": clean})
+        return clean
 
     # ---------- GitHub authentication ----------
     def refresh_github_auth(self) -> dict[str, Any]:
@@ -511,9 +572,12 @@ class OrchestratorEngine:
         prompt_file = prompt_dir / f"issue-{issue_number}-{int(time.time() * 1000)}.md"
         prompt_file.write_text(prompt, encoding="utf-8")
         short = f"Read the complete task instructions from {prompt_file} and execute them exactly."
+        model = agent.get("model") or self.get_agy_model()
         args = [
             binary,
             "--dangerously-skip-permissions",
+            "--model",
+            model,
             "--print",
             short,
             "--agent",
@@ -1228,6 +1292,10 @@ class OrchestratorEngine:
             "paused": self.state.is_paused(),
             "dashboard_bootstrap": dashboard_bootstrap,
             "github_auth": github_auth,
+            "agy_config": {
+                "model": self.get_agy_model(),
+                "available_models": self.get_available_agy_models(),
+            },
             "self_update": self.self_update_status(),
             "system": {
                 "managed_root": str(self.settings.workspace_root),

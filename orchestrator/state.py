@@ -63,6 +63,34 @@ class StateStore:
             )
             """
         )
+        self.db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS config (
+              key TEXT PRIMARY KEY,
+              value TEXT NOT NULL,
+              updated_at REAL NOT NULL
+            )
+            """
+        )
+
+    def set_config(self, key: str, value: str) -> None:
+        with self._lock:
+            self.db.execute(
+                "INSERT INTO config(key, value, updated_at) VALUES(?,?,?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
+                (key, str(value), time.time()),
+            )
+
+    def get_config(self, key: str, default: str | None = None) -> str | None:
+        row = self.db.execute("SELECT value FROM config WHERE key=?", (key,)).fetchone()
+        return row[0] if row else default
+
+    def close(self) -> None:
+        with self._lock:
+            try:
+                self.db.close()
+            except Exception:
+                pass
 
     def _row_to_lease(self, row) -> dict[str, Any] | None:
         if not row:

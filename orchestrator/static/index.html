@@ -42,6 +42,15 @@
       </div>
 
       <div class="nav-status-group">
+        <!-- Model AGY Global Selector -->
+        <div class="model-picker-wrap" title="Model AGY mặc định cho toàn bộ agent trong tất cả các bước">
+          <span class="model-picker-icon">🤖</span>
+          <label for="selectAgyModel" class="model-picker-label">Model AGY:</label>
+          <select id="selectAgyModel" class="model-picker-select" aria-label="Chọn Model AGY mặc định">
+            <option value="gemini-3.8-flash-high">Gemini 3.8 Flash (High) (Mặc định)</option>
+          </select>
+          <span id="modelSaveToast" class="model-save-toast hidden">✓ Đã lưu</span>
+        </div>
         <div class="status-pill" id="githubBadge">
           <span class="status-dot"></span> GitHub: Kiểm tra…
         </div>
@@ -104,6 +113,29 @@
             </div>
           </div>
         </div>
+
+        <!-- Section Cấu Hình Model AGY Cho Các Bước & Agent -->
+        <section class="model-config-section card">
+          <div class="model-config-inner">
+            <div class="model-config-left">
+              <div class="section-badge purple">CẤU HÌNH AGY MODEL MẶC ĐỊNH</div>
+              <h2 class="model-config-title">🤖 Model AGY Cho Mọi Bước (Task Profiles) & Agent</h2>
+              <p class="model-config-desc">Một dự án bao gồm nhiều bước (Task profiles: docs-design, gameplay-code, asset-production...) và mỗi bước gồm nhiều Agent (executor, reviewer...). Bạn có thể chọn Model AGY mặc định áp dụng chung cho toàn bộ các agent.</p>
+            </div>
+            <div class="model-config-right">
+              <div class="model-select-control">
+                <label for="selectAgyModelCard" class="model-control-label">Phiên bản Model:</label>
+                <select id="selectAgyModelCard" class="model-control-select">
+                  <option value="gemini-3.8-flash-high">Gemini 3.8 Flash (High) (Mặc định)</option>
+                </select>
+                <button id="btnSaveAgyModel" class="btn btn-sm btn-primary">Lưu Model</button>
+              </div>
+              <div id="modelConfigStatus" class="model-config-status">
+                <span class="status-dot"></span> Đang áp dụng: <strong id="currentAgyModelLabel" class="highlight-cyan font-mono">gemini-3.8-flash-high</strong>
+              </div>
+            </div>
+          </div>
+        </section>
 
         <!-- Section Import Dự Án (1 hoặc nhiều cùng lúc) -->
         <section class="import-section card">

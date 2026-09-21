@@ -505,20 +505,108 @@ function renderDetailTasks(project) {
 }
 
 function renderConfigDisplay(project) {
-  const pre = document.getElementById('configDisplay');
+  const container = document.getElementById('configContent');
+  if (!container) return;
   if (!project) {
-    pre.textContent = 'Chưa có dữ liệu';
+    container.innerHTML = '<div class="placeholder-msg">Chưa có dữ liệu dự án</div>';
     return;
   }
 
-  if (currentConfigTab === 'agents') {
-    pre.textContent = JSON.stringify(project.agent_profiles || {}, null, 2);
-  } else if (currentConfigTab === 'tasks') {
-    pre.textContent = JSON.stringify(project.task_profile_configs || {}, null, 2);
+  const currentModel = lastStatus?.agy_config?.model || 'gemini-3.8-flash-high';
+
+  if (currentConfigTab === 'tasks') {
+    const tasks = project.task_profile_configs || {};
+    const taskKeys = Object.keys(tasks);
+    if (taskKeys.length === 0) {
+      container.innerHTML = '<div class="placeholder-msg">Chưa có Task Profile nào được định nghĩa</div>';
+      return;
+    }
+    container.innerHTML = `
+      <div class="step-cards-container">
+        ${taskKeys.map(k => {
+          const t = tasks[k] || {};
+          const types = t.task_types || [];
+          return `
+            <div class="step-card">
+              <div class="step-card-header">
+                <div class="step-title-group">
+                  <span class="step-badge">Bước (Task Profile)</span>
+                  <span class="step-id font-mono">${esc(k)}</span>
+                </div>
+                <div class="step-types">
+                  ${types.map(typ => `<span class="step-type-pill">${esc(typ)}</span>`).join('')}
+                </div>
+              </div>
+              <div class="step-agents-row">
+                <div class="step-agent-box">
+                  <div class="step-agent-role">⚙️ Executor Agent</div>
+                  <div class="step-agent-name">${esc(t.executor_profile || 'Chưa gán')}</div>
+                  <div class="step-agent-model">🤖 Model: <strong>${esc(currentModel)}</strong></div>
+                </div>
+                <div class="step-agent-box">
+                  <div class="step-agent-role">🔍 Reviewer Agent</div>
+                  <div class="step-agent-name">${esc(t.reviewer_profile || 'Chưa gán')}</div>
+                  <div class="step-agent-model">🤖 Model: <strong>${esc(currentModel)}</strong></div>
+                </div>
+              </div>
+            </div>
+          `;
+        }).join('')}
+      </div>
+    `;
+  } else if (currentConfigTab === 'agents') {
+    const agents = project.agent_profiles || {};
+    const agentKeys = Object.keys(agents);
+    if (agentKeys.length === 0) {
+      container.innerHTML = '<div class="placeholder-msg">Chưa có Agent Profile nào được cấu hình</div>';
+      return;
+    }
+    container.innerHTML = `
+      <div class="agent-card-grid">
+        ${agentKeys.map(k => {
+          const a = agents[k] || {};
+          const instrs = a.instructions || [];
+          return `
+            <div class="agent-profile-card">
+              <div class="agent-card-top">
+                <span class="agent-card-id font-mono">🤖 ${esc(k)}</span>
+                <span class="agent-card-model-badge">Model: ${esc(a.model || currentModel)}</span>
+              </div>
+              <div class="agent-meta-row">
+                <span>Vai trò: <strong class="highlight-cyan">${esc(a.role || 'executor')}</strong></span>
+                <span>AGY Agent: <code class="font-mono">${esc(a.agy_agent || 'default')}</code></span>
+                <span>Effort: <strong class="highlight-amber">${esc(a.effort || 'medium')}</strong></span>
+              </div>
+              ${instrs.length > 0 ? `
+                <ul class="agent-instructions-list">
+                  ${instrs.map(ins => `<li>${esc(ins)}</li>`).join('')}
+                </ul>
+              ` : ''}
+            </div>
+          `;
+        }).join('')}
+      </div>
+    `;
   } else if (currentConfigTab === 'plans') {
-    pre.textContent = JSON.stringify(project.plans || [], null, 2);
+    const plans = project.plans || [];
+    if (plans.length === 0) {
+      container.innerHTML = '<div class="placeholder-msg">Không tìm thấy tài liệu kế hoạch (plan) nào</div>';
+      return;
+    }
+    container.innerHTML = `
+      <div class="step-cards-container">
+        ${plans.map(p => `
+          <div class="step-card">
+            <div class="step-title-group">
+              <span class="step-badge">📄 Kế hoạch</span>
+              <span class="font-mono">${esc(p)}</span>
+            </div>
+          </div>
+        `).join('')}
+      </div>
+    `;
   } else if (currentConfigTab === 'raw') {
-    pre.textContent = JSON.stringify(project, null, 2);
+    container.innerHTML = `<pre id="configDisplay">${esc(JSON.stringify(project, null, 2))}</pre>`;
   }
 }
 
@@ -602,11 +690,67 @@ async function refresh() {
     renderTelemetry(s);
     renderTerminalEvents(s.events || []);
 
+    // Sync AGY Model Config
+    syncAgyModelUI(s);
+
     if (s.issues_error && !String(s.issues_error).includes('GitHub not connected')) {
       showBlock(s.issues_error);
     }
   } catch (err) {
     showBlock(`Lỗi cập nhật trạng thái: ${err.message}`);
+  }
+}
+
+function syncAgyModelUI(s) {
+  const agyCfg = s?.agy_config || {};
+  const currentModel = agyCfg.model || 'gemini-3.8-flash-high';
+  const available = agyCfg.available_models || [
+    { id: 'gemini-3.8-flash-high', name: 'Gemini 3.8 Flash (High)', default: true }
+  ];
+
+  const selectNav = document.getElementById('selectAgyModel');
+  const selectCard = document.getElementById('selectAgyModelCard');
+  const currentLabel = document.getElementById('currentAgyModelLabel');
+
+  if (currentLabel) {
+    currentLabel.textContent = currentModel;
+  }
+
+  const populateSelect = (selectEl) => {
+    if (!selectEl) return;
+    if (selectEl.options.length <= 1 || selectEl.dataset.loadedCount != available.length) {
+      selectEl.innerHTML = available.map(m => {
+        const isDef = m.id === 'gemini-3.8-flash-high' ? ' (Mặc định)' : '';
+        return `<option value="${esc(m.id)}">${esc(m.name)}${isDef}</option>`;
+      }).join('');
+      selectEl.dataset.loadedCount = available.length;
+    }
+    if (document.activeElement !== selectEl) {
+      selectEl.value = currentModel;
+    }
+  };
+
+  populateSelect(selectNav);
+  populateSelect(selectCard);
+}
+
+async function handleAgyModelChange(newModel) {
+  if (!newModel) return;
+  try {
+    const res = await api('/api/config/agy-model', {
+      method: 'POST',
+      body: JSON.stringify({ model: newModel })
+    });
+    if (res.ok) {
+      const toast = document.getElementById('modelSaveToast');
+      if (toast) {
+        toast.classList.remove('hidden');
+        setTimeout(() => toast.classList.add('hidden'), 2500);
+      }
+      await refresh();
+    }
+  } catch (err) {
+    showBlock(`Lỗi cấu hình AGY Model: ${err.message}`);
   }
 }
 
@@ -650,6 +794,30 @@ function initEventListeners() {
   });
 
   document.getElementById('btnRefreshList').addEventListener('click', refresh);
+
+  // Model AGY Selector Listeners
+  const selectNav = document.getElementById('selectAgyModel');
+  const selectCard = document.getElementById('selectAgyModelCard');
+  const btnSaveCard = document.getElementById('btnSaveAgyModel');
+
+  if (selectNav) {
+    selectNav.addEventListener('change', (e) => {
+      if (selectCard) selectCard.value = e.target.value;
+      handleAgyModelChange(e.target.value);
+    });
+  }
+  if (selectCard) {
+    selectCard.addEventListener('change', (e) => {
+      if (selectNav) selectNav.value = e.target.value;
+      handleAgyModelChange(e.target.value);
+    });
+  }
+  if (btnSaveCard) {
+    btnSaveCard.addEventListener('click', () => {
+      const val = selectCard ? selectCard.value : (selectNav ? selectNav.value : '');
+      if (val) handleAgyModelChange(val);
+    });
+  }
 
   // Import Box
   document.getElementById('importInput').addEventListener('input', updateInputCounter);

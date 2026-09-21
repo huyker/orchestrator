@@ -53,6 +53,7 @@ class Settings:
     dashboard_host: str
     dashboard_port: int
     allowed_authors: tuple[str, ...]
+    agy_model: str = "gemini-3.8-flash-high"
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -84,6 +85,8 @@ class Settings:
                 "set ORCH_ALLOWED_AUTHORS explicitly"
             )
 
+        agy_model = os.getenv("ORCH_AGY_MODEL", "gemini-3.8-flash-high").strip() or "gemini-3.8-flash-high"
+
         return cls(
             control_repo=control_repo,
             token=token,
@@ -100,6 +103,7 @@ class Settings:
             dashboard_host=os.getenv("ORCH_DASHBOARD_HOST", "127.0.0.1").strip(),
             dashboard_port=int(os.getenv("ORCH_DASHBOARD_PORT", "8766")),
             allowed_authors=tuple(x.strip() for x in raw_authors.split(",") if x.strip()),
+            agy_model=agy_model,
         )
 
 

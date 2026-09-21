@@ -123,26 +123,37 @@ class ModelsStateTests(unittest.TestCase):
             path = Path(td) / "state.sqlite3"
             a = StateStore(path)
             b = StateStore(path)
-            self.assertTrue(a.claim("a", 1, "RUNNING", {"x":1}))
-            self.assertFalse(b.claim("b", 2, "RUNNING", {"x":2}))
-            self.assertEqual(b.get_lease()["issue_number"], 1)
+            try:
+                self.assertTrue(a.claim("a", 1, "RUNNING", {"x":1}))
+                self.assertFalse(b.claim("b", 2, "RUNNING", {"x":2}))
+                self.assertEqual(b.get_lease()["issue_number"], 1)
+            finally:
+                a.close()
+                b.close()
 
     def test_stale_lease_takeover(self):
         with tempfile.TemporaryDirectory() as td:
             path = Path(td) / "state.sqlite3"
             a = StateStore(path)
             b = StateStore(path)
-            self.assertTrue(a.claim("a", 1, "RUNNING", {"x":1}))
-            a.db.execute("UPDATE lease SET heartbeat=? WHERE singleton=1", (time.time()-1000,))
-            lease = b.takeover_if_stale("b", 10)
-            self.assertEqual(lease["instance_id"], "b")
-            self.assertEqual(lease["status"], "RECOVERING")
+            try:
+                self.assertTrue(a.claim("a", 1, "RUNNING", {"x":1}))
+                a.db.execute("UPDATE lease SET heartbeat=? WHERE singleton=1", (time.time()-1000,))
+                lease = b.takeover_if_stale("b", 10)
+                self.assertEqual(lease["instance_id"], "b")
+                self.assertEqual(lease["status"], "RECOVERING")
+            finally:
+                a.close()
+                b.close()
 
     def test_command_consumed_once(self):
         with tempfile.TemporaryDirectory() as td:
             state = StateStore(Path(td) / "state.sqlite3")
-            self.assertTrue(state.consume_command(10, 1, "answer"))
-            self.assertFalse(state.consume_command(10, 1, "answer"))
+            try:
+                self.assertTrue(state.consume_command(10, 1, "answer"))
+                self.assertFalse(state.consume_command(10, 1, "answer"))
+            finally:
+                state.close()
 
 
 if __name__ == "__main__":
