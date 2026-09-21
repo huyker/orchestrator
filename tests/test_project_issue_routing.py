@@ -63,6 +63,7 @@ class ProjectIssueRoutingTests(unittest.TestCase):
             self.assertEqual(seen_repos, [])
 
             engine.state.mark_dashboard_verified("http://127.0.0.1:8766")
+            engine._github_auth = {"connected": True, "login": "huyker", "error": None}
             engine.tick()
 
             self.assertEqual(seen_repos, ["huyker/game"])
