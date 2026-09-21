@@ -44,12 +44,12 @@ def main() -> None:
     engine = OrchestratorEngine(settings)
 
     if args.command == "serve":
-        engine.github.ensure_labels(settings.control_repo)
+        engine.ensure_labels()
         serve_dashboard(engine, settings.dashboard_host, settings.dashboard_port, with_engine_loop=True)
     elif args.command == "dashboard":
         serve_dashboard(engine, settings.dashboard_host, settings.dashboard_port, with_engine_loop=False)
     elif args.command == "worker":
-        engine.github.ensure_labels(settings.control_repo)
+        engine.ensure_labels()
         engine.serve_loop(threading.Event())
     elif args.command == "once":
         engine.tick()
@@ -61,7 +61,7 @@ def main() -> None:
     elif args.command == "status":
         print(json.dumps(engine.snapshot(), ensure_ascii=False, indent=2))
     elif args.command == "bootstrap-labels":
-        engine.github.ensure_labels(settings.control_repo)
+        engine.ensure_labels()
         print("orchestrator labels ready")
     elif args.command == "graphify-update":
         print(json.dumps(engine.update_graphify(args.project), ensure_ascii=False, indent=2))
