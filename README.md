@@ -1,8 +1,12 @@
 # Issue Orchestrator
 
-Local multi-project control center for the workflow:
+Local multi-project control center.
 
-**GPT / User → GitHub Issue → local orchestrator → project agent → PR → GPT review → merge**
+For **managed projects** such as GameGit, the runtime workflow is:
+
+**GPT / User → project GitHub Issue → local orchestrator → project agent → PR → GPT review → merge**
+
+The orchestrator repository itself is different: changes to `huyker/orchestrator` are implemented directly in code branches, reviewed, and merged. Do **not** create orchestrator runtime task Issues for orchestrator's own development.
 
 `huyker/orchestrator` is generic. Each managed project owns its own Issue queue, rules, plans, agent/task profiles, source and PRs. For GameGit, both task Issues and implementation PRs live in private `huyker/game`.
 
@@ -117,12 +121,6 @@ Graphify remains advisory. It cannot replace the project Issue task contract, pr
 
 ## 4. First run
 
-Create required lifecycle labels in the orchestrator admin repo **and every registered project's `issues_repo`**:
-
-```bash
-issue-orchestrator bootstrap-labels
-```
-
 Clone/fetch all registered projects and verify their manifests:
 
 ```bash
@@ -141,6 +139,8 @@ Expected initially:
 gamegit: huyker/game (main)
 ```
 
+**Do not create/hand off any managed-project task Issue yet.** Issue polling is hard-disabled until the dashboard bootstrap check succeeds.
+
 ---
 
 ## 5. Start the orchestrator + dashboard
@@ -150,6 +150,25 @@ Recommended command:
 ```bash
 issue-orchestrator serve
 ```
+
+Startup order is fail-closed:
+
+1. bind the localhost dashboard;
+2. probe `/api/health`;
+3. probe `/api/status`;
+4. persist `dashboard_verified`;
+5. create/update lifecycle labels only in registered managed-project `issues_repo` repositories;
+6. only then start the Issue worker.
+
+Until step 4 succeeds, `tick()`, `worker`, `once`, retry, task claim and Issue processing are disabled.
+
+Successful startup prints:
+
+```text
+Orchestrator dashboard verified: http://127.0.0.1:8766
+```
+
+Only **after that line appears** should GPT/user create or label managed-project tasks as `orch:ready`.
 
 Open:
 
@@ -183,6 +202,8 @@ Safe controls:
 ```bash
 issue-orchestrator worker
 ```
+
+This command refuses to start until a dashboard bootstrap has previously completed successfully against the same local runtime state.
 
 ### Dashboard only
 
@@ -264,7 +285,9 @@ The target repo owns its own:
 
 ---
 
-## 8. Create a task
+## 8. Create a managed-project task
+
+Prerequisite: dashboard status must show `dashboard_bootstrap.verified = true`.
 
 Create the Issue in the selected project's configured `issues_repo` (for GameGit: `huyker/game`), add label `orch:ready`, and use exactly one task block:
 
