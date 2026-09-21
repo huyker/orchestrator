@@ -8,9 +8,6 @@ version = "0.3.0"
 requires-python = ">=3.11"
 dependencies = []
 
-[project.scripts]
-issue-orchestrator = "orchestrator.cli:main"
-
 [tool.setuptools]
 packages = ["orchestrator"]
 
