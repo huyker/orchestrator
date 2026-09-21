@@ -50,6 +50,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         route = urlparse(self.path).path
+        if self.headers.get("X-Orchestrator-UI") != "1":
+            self._json({"ok": False, "error": "missing local dashboard control header"}, 403)
+            return
         try:
             if route == "/api/control/pause":
                 self.engine.pause()
