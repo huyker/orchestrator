@@ -139,14 +139,21 @@ class OrchestratorEngine:
         rows = []
         for project in self.registry.list():
             root = self.workspace.repo_dir(project["repo"])
-            row: dict[str, Any] = {"id": project["id"], "repo": project["repo"], "synced": root.exists()}
+            row: dict[str, Any] = {
+                "id": project["id"],
+                "repo": project["repo"],
+                "issues_repo": project["issues_repo"],
+                "synced": root.exists(),
+            }
             if root.exists():
                 try:
                     catalog = load_catalog(root, project.get("manifest_path", ".orchestrator/project.json"))
                     row.update({
                         "agents": sorted(catalog["agents"]),
+                        "agent_profiles": catalog["agents"],
                         "task_profiles": sorted(catalog["tasks"]),
-                        "plans": catalog["plans"][:50],
+                        "task_profile_configs": catalog["tasks"],
+                        "plans": catalog["plans"][:100],
                         "graphify": self.graphify.status(root, catalog["manifest"]),
                     })
                 except Exception as exc:
@@ -852,6 +859,19 @@ class OrchestratorEngine:
                 for row in self.github.list_open_orchestrator_issues(issue_repo):
                     if not any(label.get("name", "").startswith("orch:") for label in row.get("labels", [])):
                         continue
+                    task_summary = None
+                    task_error = None
+                    try:
+                        parsed = parse_task(row.get("body") or "")
+                        task_summary = {
+                            "task_id": parsed["task_id"],
+                            "project": parsed["project"],
+                            "type": parsed["type"],
+                            "revision": int(parsed["revision"]),
+                            "priority": int(parsed.get("priority", 9)),
+                        }
+                    except Exception as exc:
+                        task_error = str(exc)
                     queue.append({
                         "issue_repo": issue_repo,
                         "project_ids": sorted(project_ids),
@@ -859,6 +879,8 @@ class OrchestratorEngine:
                         "title": row["title"],
                         "url": row.get("html_url"),
                         "labels": [label["name"] for label in row.get("labels", [])],
+                        "task": task_summary,
+                        "task_error": task_error,
                     })
             queue_error = None
         except Exception as exc:
