@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "github-issue-orchestrator"
-version = "0.2.0"
+version = "0.3.0"
 requires-python = ">=3.11"
 dependencies = []
 
@@ -13,3 +13,6 @@ issue-orchestrator = "orchestrator.cli:main"
 
 [tool.setuptools]
 packages = ["orchestrator"]
+
+[tool.setuptools.package-data]
+orchestrator = ["static/*.html"]

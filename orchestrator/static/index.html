@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Issue Orchestrator</title>
+  <style>
+    :root { font-family: Inter, ui-sans-serif, system-ui, sans-serif; color-scheme: dark; }
+    body { margin:0; background:#0d1117; color:#e6edf3; }
+    header { padding:18px 24px; border-bottom:1px solid #30363d; display:flex; align-items:center; justify-content:space-between; gap:16px; }
+    h1 { margin:0; font-size:20px; }
+    .muted { color:#8b949e; }
+    main { max-width:1400px; margin:0 auto; padding:20px; }
+    .toolbar { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:18px; }
+    button { background:#21262d; border:1px solid #30363d; color:#e6edf3; padding:8px 12px; border-radius:7px; cursor:pointer; }
+    button:hover { background:#30363d; }
+    .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(320px,1fr)); gap:14px; }
+    .card { background:#161b22; border:1px solid #30363d; border-radius:10px; padding:14px; min-width:0; }
+    .card h2 { margin:0 0 12px; font-size:15px; }
+    .badge { display:inline-block; padding:3px 7px; border-radius:999px; background:#21262d; border:1px solid #30363d; font-size:12px; }
+    pre { white-space:pre-wrap; word-break:break-word; font-size:12px; max-height:360px; overflow:auto; background:#0d1117; padding:10px; border-radius:8px; }
+    table { width:100%; border-collapse:collapse; font-size:13px; }
+    th,td { text-align:left; border-bottom:1px solid #21262d; padding:7px 5px; vertical-align:top; }
+    a { color:#58a6ff; text-decoration:none; }
+    .ok { color:#3fb950; } .bad { color:#f85149; } .warn { color:#d29922; }
+    #toast { min-height:20px; margin-bottom:8px; }
+  </style>
+</head>
+<body>
+<header>
+  <div><h1>Issue Orchestrator</h1><div class="muted">GitHub Issue → local agents → PR → GPT review</div></div>
+  <div id="runtime" class="badge">loading…</div>
+</header>
+<main>
+  <div class="toolbar">
+    <button onclick="act('resume')">Start / Resume</button>
+    <button onclick="act('pause')">Pause</button>
+    <button onclick="act('once')">Process once</button>
+    <button onclick="act('sync')">Sync projects</button>
+    <button onclick="act('retry')">Retry via Issue</button>
+    <button onclick="refresh()">Refresh</button>
+  </div>
+  <div id="toast" class="muted"></div>
+  <div class="grid">
+    <section class="card"><h2>Active task</h2><div id="active"></div></section>
+    <section class="card"><h2>Registered projects</h2><div id="projects"></div></section>
+    <section class="card"><h2>Issue queue</h2><div id="issues"></div></section>
+    <section class="card"><h2>Recent runtime events</h2><div id="events"></div></section>
+  </div>
+</main>
+<script>
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+async function api(path, opts={}) {
+  const r = await fetch(path, opts); const j = await r.json(); if (!r.ok || j.ok === false) throw new Error(j.error || r.statusText); return j;
+}
+async function act(name) {
+  const toast=document.getElementById('toast');
+  try { const j=await api('/api/control/'+name,{method:'POST'}); toast.textContent=j.message||('Done: '+name); await refresh(); }
+  catch(e){ toast.textContent='Error: '+e.message; }
+}
+async function graphify(id){
+  const toast=document.getElementById('toast');
+  try { await api('/api/projects/'+encodeURIComponent(id)+'/graphify/update',{method:'POST'}); toast.textContent='Graphify updated: '+id; await refresh(); }
+  catch(e){ toast.textContent='Graphify error: '+e.message; }
+}
+function renderActive(a){
+  if(!a) return '<span class="muted">No active task</span>';
+  return `<div><b>#${esc(a.issue_number)}</b> <span class="badge">${esc(a.status)}</span></div><pre>${esc(JSON.stringify(a.payload,null,2))}</pre>`;
+}
+function renderProjects(rows){
+  if(!rows.length) return '<span class="muted">No projects</span>';
+  return rows.map(p=>{const g=p.graphify||{}; return `<div style="margin-bottom:14px"><b>${esc(p.id)}</b> <span class="muted">${esc(p.repo)}</span><br>
+    <span class="badge">${p.synced?'synced':'not synced'}</span>
+    <span class="badge">Graphify: ${g.enabled?(g.cli_available?(g.graph_exists?'ready':'no graph'):'CLI missing'):'off'}</span>
+    ${g.enabled?`<button onclick="graphify('${esc(p.id)}')">Update graph</button>`:''}
+    <div class="muted">Agents: ${esc((p.agents||[]).join(', ')||'—')}</div>
+    <div class="muted">Task profiles: ${esc((p.task_profiles||[]).join(', ')||'—')}</div>
+    ${p.error?`<div class="bad">${esc(p.error)}</div>`:''}</div>`}).join('');
+}
+function renderIssues(rows){
+  if(!rows.length) return '<span class="muted">No orchestrator-labelled open Issues</span>';
+  return `<table><tr><th>Issue</th><th>Labels</th></tr>${rows.map(i=>`<tr><td><a target="_blank" href="${esc(i.url)}">#${i.number} ${esc(i.title)}</a></td><td>${esc(i.labels.join(', '))}</td></tr>`).join('')}</table>`;
+}
+function renderEvents(rows){ return '<pre>'+esc(rows.map(e=>new Date(e.created_at*1000).toLocaleTimeString()+' '+e.type+' '+JSON.stringify(e.payload)).join('\n'))+'</pre>'; }
+async function refresh(){
+  try { const s=await api('/api/status'); document.getElementById('runtime').textContent=s.paused?'PAUSED':'RUNNING'; document.getElementById('active').innerHTML=renderActive(s.active); document.getElementById('projects').innerHTML=renderProjects(s.projects); document.getElementById('issues').innerHTML=renderIssues(s.issues); document.getElementById('events').innerHTML=renderEvents(s.events); }
+  catch(e){document.getElementById('toast').textContent='Status error: '+e.message;}
+}
+refresh(); setInterval(refresh,5000);
+</script>
+</body>
+</html>

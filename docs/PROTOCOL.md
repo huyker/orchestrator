@@ -1,10 +1,10 @@
-# GitHub Issue Protocol
+# GitHub Issue Protocol v1
 
-## Task transport
+GitHub Issue is the task/message source of truth. Project repositories store plans/rules/agent profiles/source code, but **not active task transport/state files**.
 
-The Issue body is the immutable task/revision contract. Target repositories must not store active task payload/status files.
+## Task contract
 
-Use exactly one block:
+Create/open one Issue in the orchestrator control repository with lifecycle label `orch:ready` and exactly one block:
 
 ```orchestrator-task
 {
@@ -14,10 +14,10 @@ Use exactly one block:
   "project": "gamegit",
   "target_repo": "huyker/game",
   "base_branch": "main",
-  "type": "code",
+  "type": "gameplay",
   "priority": 0,
-  "title": "Example",
-  "objective": "Implement the requested behavior",
+  "title": "Example task",
+  "objective": "Implement the behavior",
   "task_profile": "gameplay-code",
   "plan_refs": ["docs/plans/example.md"],
   "instructions": [],
@@ -28,42 +28,70 @@ Use exactly one block:
     "required_paths": [],
     "required_diff_globs": [],
     "forbidden_diff_globs": [],
-    "test_profiles": []
+    "test_profiles": ["gameplay_v1"]
   },
-  "review": {"independent": true, "min_score": 100}
+  "review": {"independent": true, "min_score": 100, "max_rework": 5}
 }
 ```
 
-## GPT/User -> local commands
+Changing the contract requires incrementing `revision`. Same-revision body mutation is fail-closed.
 
-All commands are Issue comments from an allowed GitHub username.
+## Commands: GPT/User -> local
 
-Answer a local question:
+Commands are Issue comments from an allowed GitHub username. Each command comment is consumed once.
+
+Answer the exact pending question:
 
 ```orchestrator-command
-{"command":"answer","revision":1,"question_id":"id","answer":"..."}
+{"command":"answer","revision":1,"question_id":"targeting-choice","answer":"Use nearest target"}
 ```
 
-Retry same task after deterministic/local failure:
+Approve an exact user-gate artifact digest:
 
 ```orchestrator-command
-{"command":"retry","revision":1}
+{"command":"approve_gate","revision":1,"gate_id":"asset-concept","artifact_digest":"sha256..."}
 ```
 
-External GPT review:
+External GPT review is bound to an exact review cycle and PR head SHA:
 
 ```orchestrator-command
-{"command":"external_review","revision":1,"verdict":"PASS","findings":[]}
+{"command":"external_review","revision":1,"review_cycle":2,"pr_head_sha":"<sha>","verdict":"PASS","findings":[]}
 ```
 
 or:
 
 ```orchestrator-command
-{"command":"external_review","revision":1,"verdict":"FIX_REQUIRED","findings":["..."]}
+{"command":"external_review","revision":1,"review_cycle":2,"pr_head_sha":"<sha>","verdict":"FIX_REQUIRED","findings":["..."]}
 ```
 
-## Local -> GPT/User
+Retry a blocked task:
 
-Local posts `orchestrator-event` comments for: started, question, acceptance_failed, ready_for_gpt_review, gpt_fix_required, complete, blocked.
+```orchestrator-command
+{"command":"retry","revision":1}
+```
 
-Exactly one task is active globally. The next `orch:ready` Issue is not claimed until the active task is complete or explicitly released.
+The dashboard Retry button posts this same command to the Issue; it does not bypass GitHub.
+
+## Events: local -> GPT/User
+
+Local writes structured `orchestrator-event` comments, including:
+
+- `started`
+- `question`
+- `answer_received`
+- `user_gate_required`
+- `user_gate_approved`
+- `acceptance_failed`
+- `review_failed`
+- `ready_for_gpt_review`
+- `gpt_fix_required`
+- `gpt_approved`
+- `recovered_after_restart`
+- `blocked`
+- `complete`
+
+## Lifecycle
+
+`READY -> RUNNING -> [QUESTION/GATE/REWORK]* -> GPT_REVIEW -> APPROVED -> MERGED -> DONE`
+
+Only one task lease exists globally per local orchestrator state database. Lease acquisition is atomic and stale leases are recovered after restart.
