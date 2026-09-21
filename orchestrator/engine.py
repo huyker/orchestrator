@@ -71,6 +71,29 @@ class OrchestratorEngine:
     def github_auth_status(self) -> dict[str, Any]:
         return dict(self._github_auth)
 
+    def add_managed_project(
+        self,
+        source: str,
+        *,
+        project_id: str | None = None,
+        issues_repo: str | None = None,
+        default_branch: str = "main",
+    ) -> dict[str, Any]:
+        self.registry = Registry(self.settings.registry_file)
+        entry = self.registry.add_project(
+            source,
+            project_id=project_id,
+            issues_repo=issues_repo,
+            default_branch=default_branch,
+        )
+        self.state.add_event("project_registered", {
+            "project": entry["id"],
+            "repo": entry["repo"],
+            "source_path": entry.get("source_path"),
+        })
+        # The normal background sync loop will pick it up automatically.
+        return entry
+
     def connect_github_token(self, token: str, env_path: Path = Path(".env")) -> dict[str, Any]:
         token = token.strip()
         if not token:
@@ -104,6 +127,63 @@ class OrchestratorEngine:
         self._github_auth = status
         self.state.add_event("github_connected", {"login": status.get("login")})
         return dict(status)
+
+
+    @staticmethod
+    def _lifecycle(status: str, labels: list[str] | None = None) -> dict[str, Any]:
+        labels = labels or []
+        stages = [
+            {"id": "READY", "label": "Ready"},
+            {"id": "IMPLEMENT", "label": "Implement"},
+            {"id": "VALIDATE", "label": "Validate"},
+            {"id": "INTERNAL_REVIEW", "label": "QA"},
+            {"id": "GPT_REVIEW", "label": "GPT Review"},
+            {"id": "DONE", "label": "Done"},
+        ]
+        normalized = str(status or "").upper()
+        stage_map = {
+            "READY": 0,
+            "RUNNING": 1,
+            "WAITING_ANSWER": 1,
+            "WAITING_USER_GATE": 2,
+            "REWORK": 1,
+            "VALIDATING": 2,
+            "INTERNAL_REVIEW": 3,
+            "WAITING_GPT_REVIEW": 4,
+            "APPROVED_WAITING_MERGE": 4,
+            "COMPLETED": 5,
+            "DONE": 5,
+            "BLOCKED": 1,
+        }
+        if normalized not in stage_map:
+            if "orch:done" in labels:
+                normalized = "DONE"
+            elif "orch:approved" in labels or "orch:gpt-review" in labels:
+                normalized = "WAITING_GPT_REVIEW"
+            elif "orch:user-gate" in labels:
+                normalized = "WAITING_USER_GATE"
+            elif "orch:rework" in labels:
+                normalized = "REWORK"
+            elif "orch:question" in labels:
+                normalized = "WAITING_ANSWER"
+            elif "orch:running" in labels:
+                normalized = "RUNNING"
+            elif "orch:blocked" in labels:
+                normalized = "BLOCKED"
+            else:
+                normalized = "READY"
+        index = stage_map.get(normalized, 0)
+        progress = [0, 25, 45, 65, 85, 100][index]
+        return {
+            "status": normalized,
+            "stage_index": index,
+            "progress_percent": progress,
+            "stepper_stages": stages,
+            "terminal": index == len(stages) - 1,
+            "is_rework": normalized == "REWORK",
+            "is_blocked": normalized == "BLOCKED",
+            "waiting_user": normalized in ("WAITING_ANSWER", "WAITING_USER_GATE"),
+        }
 
     # ---------- communication ----------
     def _issue_repo(self, issue_number: int, explicit: str | None = None) -> str:
@@ -232,6 +312,8 @@ class OrchestratorEngine:
                 "id": project["id"],
                 "repo": project["repo"],
                 "issues_repo": project["issues_repo"],
+                "source_path": project.get("source_path"),
+                "default_branch": project.get("default_branch", "main"),
                 "synced": root.exists(),
             }
             if root.exists():
@@ -617,6 +699,7 @@ class OrchestratorEngine:
             self.set_label(issue_number, LABEL_GATE)
             return
 
+        self.state.update_lease(self.instance_id, status="VALIDATING", payload=payload)
         first = self.machine_acceptance(task, catalog, profile, worktree)
         if not first["pass"]:
             self._schedule_rework(lease, payload, task, "acceptance_failed", report=first)
@@ -625,6 +708,7 @@ class OrchestratorEngine:
         diff = self.workspace.diff(worktree, task["base_branch"])
         reviewer_context = self.build_context(worktree, task, catalog, profile, reviewer)
         reviewer_prompt = f"""# Independent reviewer\n\nGitHub Issue: {issue_repo}#{issue_number}\nYou did not implement this task. Review the Issue contract plus actual files/diff/tests.\n\n## Task\n{json.dumps(task, ensure_ascii=False, indent=2)}\n\n## Reviewer profile\n{json.dumps(reviewer, ensure_ascii=False, indent=2)}\n\n## Project context\n{reviewer_context}\n\n## Graphify context (advisory)\n{graph_context or '[not available]'}\n\n## Deterministic acceptance\n{json.dumps(first, ensure_ascii=False, indent=2)}\n\n## Actual diff\n{diff}\n\nInspect actual files/assets/tests directly. End output with exactly one line:\n@@ORCH_REVIEW@@ {{\"verdict\":\"PASS|FAIL\",\"score\":0,\"summary\":\"...\",\"findings\":[],\"acceptance\":[{{\"criterion\":\"exact acceptance string\",\"status\":\"PASS|FAIL\",\"evidence\":\"exact evidence\"}}],\"prohibited\":[{{\"rule\":\"exact prohibited string\",\"status\":\"PASS|FAIL\",\"evidence\":\"exact evidence\"}}],\"risks\":[]}}\nEvery acceptance/prohibited item must appear exactly and include evidence.\n"""
+        self.state.update_lease(self.instance_id, status="INTERNAL_REVIEW", payload=payload)
         reviewer_code, reviewer_output = self.run_agent(reviewer, reviewer_prompt, worktree, issue_number)
         if reviewer_code:
             self._block(lease, "reviewer infrastructure failure", exit_code=reviewer_code, output=reviewer_output[-4000:])
@@ -634,6 +718,7 @@ class OrchestratorEngine:
             self._schedule_rework(lease, payload, task, "review_failed", review=review, errors=review_errors)
             return
 
+        self.state.update_lease(self.instance_id, status="VALIDATING", payload=payload)
         final = self.machine_acceptance(task, catalog, profile, worktree)
         if not final["pass"]:
             self._schedule_rework(lease, payload, task, "final_acceptance_failed", report=final)
@@ -974,19 +1059,39 @@ class OrchestratorEngine:
                             }
                         except Exception as exc:
                             task_error = str(exc)
+                        labels = [label["name"] for label in row.get("labels", [])]
+                        active_lease = self.state.get_lease()
+                        active_status = ""
+                        if (
+                            active_lease
+                            and int(active_lease["issue_number"]) == int(row["number"])
+                            and str(active_lease["payload"].get("issue_repo")) == issue_repo
+                        ):
+                            active_status = active_lease["status"]
+                        lifecycle = self._lifecycle(active_status, labels)
                         queue.append({
                             "issue_repo": issue_repo,
                             "project_ids": sorted(project_ids),
                             "number": row["number"],
                             "title": row["title"],
                             "url": row.get("html_url"),
-                            "labels": [label["name"] for label in row.get("labels", [])],
+                            "labels": labels,
                             "task": task_summary,
                             "task_error": task_error,
+                            "lifecycle": lifecycle,
                         })
                 queue_error = None
             except Exception as exc:
                 queue, queue_error = [], str(exc)
+        active = self.state.get_lease()
+        active_lifecycle = self._lifecycle(active["status"]) if active else self._lifecycle("READY")
+        metrics = {
+            "ready": sum(1 for x in queue if x.get("lifecycle", {}).get("status") == "READY"),
+            "in_progress": sum(1 for x in queue if x.get("lifecycle", {}).get("stage_index") in (1, 2, 3)),
+            "review": sum(1 for x in queue if x.get("lifecycle", {}).get("stage_index") == 4),
+            "blocked": sum(1 for x in queue if x.get("lifecycle", {}).get("is_blocked")),
+            "total_open": len(queue),
+        }
         return {
             "instance_id": self.instance_id,
             "paused": self.state.is_paused(),
@@ -996,7 +1101,9 @@ class OrchestratorEngine:
                 "last_sync_at": self._last_sync_at,
                 "last_results": self._last_sync_results,
             },
-            "active": self.state.get_lease(),
+            "active": active,
+            "active_lifecycle": active_lifecycle,
+            "metrics": metrics,
             "projects": self.project_snapshot(),
             "issues": queue,
             "issues_error": queue_error,
