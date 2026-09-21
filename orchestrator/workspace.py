@@ -131,7 +131,10 @@ class WorkspaceManager:
             branch = self.remote_default_branch(root)
 
         self.run(["git", "checkout", branch], cwd=root)
-        self.run(["git", "pull", "--ff-only", "origin", branch], cwd=root, timeout=300)
+        try:
+            self.run(["git", "merge", "--ff-only", f"origin/{branch}"], cwd=root, timeout=300)
+        except Exception:
+            self.run(["git", "pull", "--ff-only", "origin", branch], cwd=root, timeout=300)
         return root
 
     def prepare_task(
