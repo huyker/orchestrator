@@ -79,6 +79,8 @@ class OrchestratorEngine:
         self.github.set_lifecycle_label(self._issue_repo(issue, issue_repo), issue, label)
 
     def ensure_labels(self) -> None:
+        if not self.state.is_dashboard_verified():
+            raise RuntimeError("Dashboard bootstrap has not been verified; managed-project Issue mutation is disabled")
         # Orchestrator itself is developed directly through code review/merge.
         # Lifecycle labels belong only to managed-project Issue repositories.
         repos = {project["issues_repo"] for project in self.registry.list()}
@@ -853,45 +855,50 @@ class OrchestratorEngine:
 
     # ---------- dashboard operations ----------
     def snapshot(self) -> dict[str, Any]:
-        try:
+        dashboard_bootstrap = self.state.dashboard_verification()
+        if not dashboard_bootstrap["verified"]:
             queue = []
-            sources: dict[str, list[str]] = {}
-            for project in self.registry.list():
-                sources.setdefault(project["issues_repo"], []).append(project["id"])
-            for issue_repo, project_ids in sorted(sources.items()):
-                for row in self.github.list_open_orchestrator_issues(issue_repo):
-                    if not any(label.get("name", "").startswith("orch:") for label in row.get("labels", [])):
-                        continue
-                    task_summary = None
-                    task_error = None
-                    try:
-                        parsed = parse_task(row.get("body") or "")
-                        task_summary = {
-                            "task_id": parsed["task_id"],
-                            "project": parsed["project"],
-                            "type": parsed["type"],
-                            "revision": int(parsed["revision"]),
-                            "priority": int(parsed.get("priority", 9)),
-                        }
-                    except Exception as exc:
-                        task_error = str(exc)
-                    queue.append({
-                        "issue_repo": issue_repo,
-                        "project_ids": sorted(project_ids),
-                        "number": row["number"],
-                        "title": row["title"],
-                        "url": row.get("html_url"),
-                        "labels": [label["name"] for label in row.get("labels", [])],
-                        "task": task_summary,
-                        "task_error": task_error,
-                    })
-            queue_error = None
-        except Exception as exc:
-            queue, queue_error = [], str(exc)
+            queue_error = "dashboard bootstrap not verified; managed-project Issue queue is disabled"
+        else:
+            try:
+                queue = []
+                sources: dict[str, list[str]] = {}
+                for project in self.registry.list():
+                    sources.setdefault(project["issues_repo"], []).append(project["id"])
+                for issue_repo, project_ids in sorted(sources.items()):
+                    for row in self.github.list_open_orchestrator_issues(issue_repo):
+                        if not any(label.get("name", "").startswith("orch:") for label in row.get("labels", [])):
+                            continue
+                        task_summary = None
+                        task_error = None
+                        try:
+                            parsed = parse_task(row.get("body") or "")
+                            task_summary = {
+                                "task_id": parsed["task_id"],
+                                "project": parsed["project"],
+                                "type": parsed["type"],
+                                "revision": int(parsed["revision"]),
+                                "priority": int(parsed.get("priority", 9)),
+                            }
+                        except Exception as exc:
+                            task_error = str(exc)
+                        queue.append({
+                            "issue_repo": issue_repo,
+                            "project_ids": sorted(project_ids),
+                            "number": row["number"],
+                            "title": row["title"],
+                            "url": row.get("html_url"),
+                            "labels": [label["name"] for label in row.get("labels", [])],
+                            "task": task_summary,
+                            "task_error": task_error,
+                        })
+                queue_error = None
+            except Exception as exc:
+                queue, queue_error = [], str(exc)
         return {
             "instance_id": self.instance_id,
             "paused": self.state.is_paused(),
-            "dashboard_bootstrap": self.state.dashboard_verification(),
+            "dashboard_bootstrap": dashboard_bootstrap,
             "active": self.state.get_lease(),
             "projects": self.project_snapshot(),
             "issues": queue,
