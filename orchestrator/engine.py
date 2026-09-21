@@ -85,6 +85,10 @@ class OrchestratorEngine:
             "checked_at": None,
         }
 
+    def close(self) -> None:
+        if hasattr(self, "state") and self.state:
+            self.state.close()
+
     def _refresh_agy_models_bg(self) -> None:
         binary = shutil.which(self.settings.agy_bin)
         if not binary:
@@ -301,7 +305,16 @@ class OrchestratorEngine:
             return self.settings.control_repo
         raise RuntimeError("managed-project issue_repo is required; no legacy ORCH_CONTROL_REPO fallback is configured")
 
-    def event(self, issue: int, event_type: str, *, issue_repo: str | None = None, logical_issue_id: str | None = None, **payload: Any) -> int:
+    def event(
+        self,
+        issue: int,
+        event_type: str,
+        *,
+        issue_repo: str | None = None,
+        logical_issue_id: str | None = None,
+        post_to_github: bool | None = None,
+        **payload: Any,
+    ) -> int:
         repo = self._issue_repo(issue, issue_repo)
         logical_issue = logical_issue_id or f"issue{issue}"
         lease = self.state.get_lease()
@@ -340,6 +353,21 @@ class OrchestratorEngine:
             **payload,
         }
         self.state.add_event(event_type, {"issue_repo": repo, "issue_number": issue, **payload})
+
+        # Only post comments to GitHub Issue when code is ready/submitted or user interaction is needed.
+        # Local execution failures (blocked), internal acceptance/review rework cycles remain local-only.
+        github_visible_events = {
+            "user_gate_required",
+            "ready_for_gpt_review",
+            "fixdone",
+            "question",
+            "complete",
+            "done",
+        }
+        should_post = post_to_github if post_to_github is not None else (event_type in github_visible_events)
+        if not should_post:
+            return 0
+
         header = f"[{logical_issue}_{spec_event}_by{actor}]"
         comment_body = f"{header}\n\n```orchestrator-event\n" + json.dumps(body, ensure_ascii=False, indent=2) + "\n```"
         created = self.github.comment(
@@ -739,11 +767,21 @@ class OrchestratorEngine:
 
     def _block(self, lease: dict, reason: str, **extra: Any) -> None:
         payload = dict(lease["payload"])
-        comment_id = self.event(lease["issue_number"], "blocked", reason=reason, **extra)
-        payload["command_after_comment_id"] = comment_id
+        comment_id = self.event(lease["issue_number"], "blocked", post_to_github=False, reason=reason, **extra)
+        if comment_id:
+            payload["command_after_comment_id"] = comment_id
         payload["blocked_reason"] = reason
+        if "output" in extra:
+            payload["blocked_output"] = str(extra["output"])
+        elif "error" in extra:
+            payload["blocked_output"] = str(extra["error"])
+        elif "report" in extra:
+            payload["blocked_output"] = json.dumps(extra["report"], ensure_ascii=False, indent=2)
+        elif "errors" in extra:
+            payload["blocked_output"] = json.dumps(extra["errors"], ensure_ascii=False, indent=2)
+        else:
+            payload["blocked_output"] = reason
         self.state.update_lease(self.instance_id, status="BLOCKED", payload=payload)
-        self.set_label(lease["issue_number"], LABEL_BLOCKED)
 
     def _required_gate(self, task: dict, profile: dict, payload: dict) -> dict | None:
         gates = list(task.get("user_gates", []))
@@ -954,12 +992,14 @@ class OrchestratorEngine:
         issue_number = lease["issue_number"]
         count = int(payload.get("rework_count", 0)) + 1
         max_rework = int((task.get("review") or {}).get("max_rework", 5))
-        comment_id = self.event(issue_number, event_type, rework_count=count, **details)
-        payload.update({"rework_count": count, "command_after_comment_id": comment_id})
+        comment_id = self.event(issue_number, event_type, post_to_github=False, rework_count=count, **details)
+        payload.update({"rework_count": count})
+        if comment_id:
+            payload["command_after_comment_id"] = comment_id
         if count > max_rework:
             payload["blocked_reason"] = f"rework limit exceeded ({max_rework})"
+            payload["blocked_output"] = f"Task rework count {count} exceeded max_rework limit of {max_rework}."
             self.state.update_lease(self.instance_id, status="BLOCKED", payload=payload)
-            self.set_label(issue_number, LABEL_BLOCKED)
             return
         self.state.update_lease(self.instance_id, status="REWORK", payload=payload)
         self.set_label(issue_number, LABEL_REWORK)
@@ -976,12 +1016,16 @@ class OrchestratorEngine:
         after = int(payload.get("command_after_comment_id", 0))
 
         if status == "RECOVERING":
-            self.event(issue_number, "recovered_after_restart", previous_instance=payload.get("recovered_from_instance"))
+            self.event(issue_number, "recovered_after_restart", post_to_github=False, previous_instance=payload.get("recovered_from_instance"))
+            payload.pop("blocked_reason", None)
+            payload.pop("blocked_output", None)
             self.state.update_lease(self.instance_id, status="REWORK", payload=payload)
             self.set_label(issue_number, LABEL_REWORK)
             return
 
-        if status in ("RUNNING", "REWORK"):
+        if status in ("RUNNING", "REWORK", "VALIDATING", "INTERNAL_REVIEW"):
+            payload.pop("blocked_reason", None)
+            payload.pop("blocked_output", None)
             self._execute_active(lease, issue, task, payload)
             return
 
@@ -1114,8 +1158,9 @@ class OrchestratorEngine:
                 after_comment_id=after,
             )
             if found:
-                self.event(issue_number, "retry_accepted")
+                self.event(issue_number, "retry_accepted", post_to_github=False)
                 payload.pop("blocked_reason", None)
+                payload.pop("blocked_output", None)
                 self.state.update_lease(self.instance_id, status="REWORK", payload=payload)
                 self.set_label(issue_number, LABEL_REWORK)
             return
@@ -1262,13 +1307,18 @@ class OrchestratorEngine:
                         labels = [label["name"] for label in row.get("labels", [])]
                         active_lease = self.state.get_lease()
                         active_status = ""
+                        active_payload = {}
                         if (
                             active_lease
                             and int(active_lease["issue_number"]) == int(row["number"])
                             and str(active_lease["payload"].get("issue_repo")) == issue_repo
                         ):
                             active_status = active_lease["status"]
+                            active_payload = dict(active_lease.get("payload") or {})
                         lifecycle = self._lifecycle(active_status, labels)
+                        if active_status == "BLOCKED" or lifecycle.get("is_blocked"):
+                            lifecycle["blocked_reason"] = active_payload.get("blocked_reason") or ""
+                            lifecycle["blocked_output"] = active_payload.get("blocked_output") or ""
                         queue.append({
                             "issue_repo": issue_repo,
                             "project_ids": sorted(project_ids),
@@ -1285,6 +1335,11 @@ class OrchestratorEngine:
                 queue, queue_error = [], str(exc)
         active = self.state.get_lease()
         active_lifecycle = self._lifecycle(active["status"]) if active else self._lifecycle("READY")
+        if active:
+            active_payload = dict(active.get("payload") or {})
+            if active["status"] == "BLOCKED" or active_lifecycle.get("is_blocked"):
+                active_lifecycle["blocked_reason"] = active_payload.get("blocked_reason") or ""
+                active_lifecycle["blocked_output"] = active_payload.get("blocked_output") or ""
         metrics = {
             "ready": sum(1 for x in queue if x.get("lifecycle", {}).get("status") == "READY"),
             "in_progress": sum(1 for x in queue if x.get("lifecycle", {}).get("stage_index") in (1, 2, 3)),
@@ -1331,17 +1386,19 @@ class OrchestratorEngine:
     def request_retry(self) -> None:
         if not self.state.is_dashboard_verified():
             raise RuntimeError("Dashboard bootstrap has not been verified; Issue operations are disabled")
-        if not self._github_auth.get("connected"):
-            raise RuntimeError("GitHub is not connected; Issue operations are disabled")
         lease = self.state.get_lease()
         if not lease:
             raise RuntimeError("No active task")
-        payload = lease["payload"]
-        self.github.post_command(
-            self._issue_repo(lease["issue_number"]),
-            lease["issue_number"],
-            {"command": "retry", "revision": int(payload["revision"]), "source": "dashboard"},
-        )
+        payload = dict(lease["payload"])
+        payload.pop("blocked_reason", None)
+        payload.pop("blocked_output", None)
+        self.state.update_lease(self.instance_id, status="REWORK", payload=payload)
+        self.state.add_event("retry_requested_from_dashboard", {"issue_number": lease["issue_number"]})
+        if self._github_auth.get("connected"):
+            try:
+                self.set_label(lease["issue_number"], LABEL_REWORK)
+            except Exception:
+                pass
 
     def update_graphify(self, project_id: str) -> dict[str, Any]:
         project = self.registry.resolve(project_id)

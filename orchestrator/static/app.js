@@ -100,10 +100,32 @@ function renderLifecycleStepper(lc = {}) {
   if (lc.is_rework) {
     banner = '<div class="rework-banner">↺ <b>REWORK</b> · Cần điều chỉnh và làm lại</div>';
   } else if (lc.is_blocked) {
+    const reason = lc.blocked_reason || 'Đang bị nghẽn, cần can thiệp xử lý';
+    const output = lc.blocked_output || '';
     banner = `
-      <div class="blocked-banner" style="display: flex; justify-content: space-between; align-items: center; gap: 8px;">
-        <span>⚠️ <b>BLOCKED</b> · Đang bị nghẽn/chờ can thiệp</span>
-        <button class="btn btn-sm btn-primary" onclick="retryActiveTask(event)" style="padding: 3px 12px; font-size: 12px; white-space: nowrap; cursor: pointer;">🔄 Thử Lại (Retry)</button>
+      <div class="blocked-banner-card">
+        <div class="blocked-banner-header">
+          <div class="blocked-banner-title">
+            <span class="blocked-pulse-dot"></span>
+            <b>BLOCKED</b> · Đang bị nghẽn / Chờ can thiệp
+          </div>
+          <button class="btn btn-sm btn-primary btn-retry-blocked" onclick="retryActiveTask(event)">
+            🔄 Thử Lại (Retry)
+          </button>
+        </div>
+        <div class="blocked-reason-row">
+          <span class="blocked-reason-label">Lý do:</span>
+          <span class="blocked-reason-val font-mono">${esc(reason)}</span>
+        </div>
+        ${output ? `
+          <div class="blocked-log-container">
+            <div class="blocked-log-bar">
+              <span class="blocked-log-title">📋 Chi Tiết Lỗi & Log Hệ Thống (Local Only):</span>
+              <button class="btn-copy-log" onclick="copyBlockedLog(this, event)">📋 Copy Log</button>
+            </div>
+            <pre class="blocked-log-view font-mono">${esc(output)}</pre>
+          </div>
+        ` : ''}
       </div>`;
   } else if (lc.stage_index === 4) {
     banner = '<div class="external-gate-banner">⏳ <b>GPT Review</b> · Đang chờ duyệt mã nguồn</div>';
@@ -143,6 +165,35 @@ function renderDashboardKPIs(status) {
 
   document.getElementById('navProjectCount').textContent = projects.length;
   document.getElementById('projectsPill').textContent = `${projects.length} dự án`;
+
+  // Render Active / Blocked Task Card on Dashboard
+  const activeTaskSection = document.getElementById('dashActiveTaskSection');
+  if (activeTaskSection) {
+    const active = status.active;
+    if (active && active.issue_number) {
+      const p = active.payload || {};
+      const lc = status.active_lifecycle || {};
+      const isBlocked = active.status === 'BLOCKED' || lc.is_blocked;
+      const statusBadgeCls = isBlocked ? 'blocked' : 'running';
+      const statusBadgeText = isBlocked ? '⚠️ BLOCKED' : '⚡ RUNNING';
+      activeTaskSection.className = `active-task-hero-card ${isBlocked ? 'blocked-active' : ''}`;
+      activeTaskSection.innerHTML = `
+        <div class="active-task-header">
+          <div class="active-task-title-group">
+            <span class="active-task-badge ${statusBadgeCls}">${statusBadgeText}</span>
+            <span class="active-task-name font-mono">#${esc(active.issue_number)} · ${esc(p.task_id || 'TASK')} (${esc(p.project || p.issue_repo)})</span>
+          </div>
+          <div>
+            <a href="https://github.com/${esc(p.issue_repo || '')}/issues/${esc(active.issue_number)}" target="_blank" class="btn btn-sm btn-outline">Mở Issue trên GitHub ↗</a>
+          </div>
+        </div>
+        ${renderLifecycleStepper(lc)}
+      `;
+    } else {
+      activeTaskSection.className = 'hidden';
+      activeTaskSection.innerHTML = '';
+    }
+  }
 }
 
 function renderProjectsGrid(projects) {
@@ -367,12 +418,27 @@ async function removeProject(projectId) {
   }
 }
 
+// Copy blocked log
+function copyBlockedLog(btn, e) {
+  if (e) e.stopPropagation();
+  const pre = btn.closest('.blocked-log-container')?.querySelector('.blocked-log-view');
+  if (pre) {
+    navigator.clipboard.writeText(pre.textContent).then(() => {
+      const orig = btn.textContent;
+      btn.textContent = '✓ Đã Copy';
+      setTimeout(() => btn.textContent = orig, 2000);
+    }).catch(err => {
+      alert('Không thể sao chép: ' + err);
+    });
+  }
+}
+
 // Retry active task
 async function retryActiveTask(e) {
   if (e && e.stopPropagation) e.stopPropagation();
   try {
     const res = await api('/api/control/retry', { method: 'POST' });
-    alert(res.message || 'Đã gửi lệnh thử lại task (retry) lên GitHub Issue!');
+    alert(res.message || 'Đã kích hoạt thử lại task!');
     await refresh();
   } catch (err) {
     alert('Lỗi khi thử lại task: ' + err.message);

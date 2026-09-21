@@ -7,6 +7,13 @@ from orchestrator.engine import OrchestratorEngine
 from orchestrator.models import Settings
 
 
+def temp_dir():
+    try:
+        return tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+    except TypeError:
+        return tempfile.TemporaryDirectory()
+
+
 def settings_for(td):
     root = Path(td)
     registry = root / "projects.json"
@@ -31,7 +38,7 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(review["progress_percent"], 85)
 
     def test_tick_is_hard_gated_until_dashboard_verified(self):
-        with tempfile.TemporaryDirectory() as td:
+        with temp_dir() as td:
             engine = OrchestratorEngine(settings_for(td))
             engine.github.list_ready_issues = lambda repo: (_ for _ in ()).throw(AssertionError("Issue queue must not be read"))
             engine.github.list_open_orchestrator_issues = lambda repo: (_ for _ in ()).throw(AssertionError("Issue status queue must not be read"))
@@ -44,7 +51,7 @@ class EngineTests(unittest.TestCase):
                 engine.ensure_labels()
 
     def test_question_answer_binding_and_replay_protection(self):
-        with tempfile.TemporaryDirectory() as td:
+        with temp_dir() as td:
             engine = OrchestratorEngine(settings_for(td))
             comments = [
                 {"id": 10, "user":{"login":"owner"}, "body":'```orchestrator-command\n{"command":"answer","revision":1,"question_id":"old","answer":"x"}\n```'},
@@ -55,7 +62,7 @@ class EngineTests(unittest.TestCase):
             self.assertIsNone(engine._find_command(comments, 1, "answer", 1, after_comment_id=9, predicate=lambda c:c.get("question_id")=="q1"))
 
     def test_review_parser_returns_rework_errors(self):
-        with tempfile.TemporaryDirectory() as td:
+        with temp_dir() as td:
             engine = OrchestratorEngine(settings_for(td))
             task = {"acceptance":["A"],"prohibited":[],"review":{"min_score":100}}
             line = '@@ORCH_REVIEW@@ '+json.dumps({"verdict":"FAIL","score":50,"acceptance":[{"criterion":"A","status":"FAIL","evidence":"missing"}],"prohibited":[]})
@@ -64,7 +71,7 @@ class EngineTests(unittest.TestCase):
             self.assertTrue(errors)
 
     def test_manifest_protected_paths_fail_closed(self):
-        with tempfile.TemporaryDirectory() as td:
+        with temp_dir() as td:
             engine = OrchestratorEngine(settings_for(td))
             engine.workspace.changed_files = lambda wt, base: [".github/workflows/pwn.yml"]
             task = {"base_branch":"main","type":"code","checks":{"test_profiles":[]}}
@@ -75,7 +82,7 @@ class EngineTests(unittest.TestCase):
             self.assertIn("forbidden diff glob changed: .github/workflows/**", result["failures"])
 
     def test_asset_profile_requires_user_gate(self):
-        with tempfile.TemporaryDirectory() as td:
+        with temp_dir() as td:
             engine = OrchestratorEngine(settings_for(td))
             with self.assertRaises(ValueError):
                 engine._required_gate({"user_gates":[]},{"require_user_gate":True},{"approved_gates":{}})
@@ -83,7 +90,7 @@ class EngineTests(unittest.TestCase):
             self.assertEqual(gate["id"], "concept")
 
     def test_named_test_timeout(self):
-        with tempfile.TemporaryDirectory() as td:
+        with temp_dir() as td:
             engine = OrchestratorEngine(settings_for(td))
             result = engine._run_named_test("python -c \"import time; time.sleep(2)\"", Path(td), 1)
             self.assertTrue(result["timed_out"])
@@ -94,7 +101,7 @@ if __name__ == "__main__":
 
 class LifecycleTests(unittest.TestCase):
     def test_same_revision_contract_mutation_blocks(self):
-        with tempfile.TemporaryDirectory() as td:
+        with temp_dir() as td:
             engine = OrchestratorEngine(settings_for(td))
             payload={"revision":1,"contract_hash":"old"}
             engine.state.claim(engine.instance_id, 1, "RUNNING", payload)
@@ -105,7 +112,7 @@ class LifecycleTests(unittest.TestCase):
             self.assertEqual(engine.state.get_lease()["status"],"BLOCKED")
 
     def test_reviewer_failure_schedules_same_task_rework(self):
-        with tempfile.TemporaryDirectory() as td:
+        with temp_dir() as td:
             engine = OrchestratorEngine(settings_for(td))
             payload={"revision":1,"contract_hash":"h","rework_count":0}
             engine.state.claim(engine.instance_id, 1, "RUNNING", payload)
