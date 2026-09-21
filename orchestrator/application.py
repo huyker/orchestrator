@@ -10,7 +10,7 @@ from pathlib import Path
 
 from .dashboard import make_server, verify_dashboard
 from .engine import OrchestratorEngine
-from .models import Settings, discover_github_token
+from .models import Settings
 from .self_update import SelfUpdater
 
 
@@ -46,11 +46,7 @@ class AllInOneApplication:
     def _auth_forever(self) -> None:
         while not self.stop.is_set():
             try:
-                if not self.engine.github_auth_status().get("connected"):
-                    token = discover_github_token()
-                    if token:
-                        self.engine.github.set_token(token)
-                    self.engine.refresh_github_auth()
+                self.engine.refresh_github_auth()
             except Exception as exc:
                 self.engine.state.add_event("github_auth_error", {"error": str(exc)})
             self.stop.wait(10)
@@ -144,8 +140,9 @@ class AllInOneApplication:
             address = verify_dashboard(self.engine, probe_host, int(actual_port))
             print(f"Orchestrator dashboard verified: {address}")
             print(f"Auto sync interval: {self.sync_interval}s")
-            print("GitHub authentication will be auto-detected; otherwise connect it from the dashboard.")
-            print("Managed-project Issue worker starts automatically after GitHub auth + first successful project sync.")
+            print(f"Managed project root: {self.settings.workspace_root}")
+            print("Git uses local SSH credentials; Issue/PR API uses the existing gh CLI login.")
+            print("Managed-project Issue worker starts automatically after gh auth + first successful project sync.")
 
             if self.open_browser:
                 try:

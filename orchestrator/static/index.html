@@ -33,26 +33,13 @@
         <button class="btn btn-info" id="btnAddProject">＋ Add Project</button>
       </div>
       <div class="controls-right">
+        <span class="sync-indicator" id="managedRootLabel">Managed root: —</span>
         <span class="sync-indicator" id="lastSyncLabel">Last sync: never</span>
         <button class="btn-sm" id="btnRefresh">Refresh</button>
       </div>
     </section>
 
     <div id="blockerBanner" class="blocker-banner hidden"><span>⚠️ </span><span id="blockerText"></span></div>
-
-    <section id="githubSetup" class="card hidden">
-      <div class="panel-header"><h2>GITHUB CONNECTION</h2><span class="count-pill">Issue / PR API</span></div>
-      <div class="github-setup-row">
-        <div>
-          <div class="warn"><strong>GitHub API is not connected.</strong> Dashboard and Git sync stay online; Issue processing remains disabled.</div>
-          <div class="form-help">The app first tries GITHUB_TOKEN, GH_TOKEN and <code>gh auth token</code>. Paste a token only if none are available.</div>
-        </div>
-        <div class="github-token-box">
-          <input id="githubToken" class="form-input" type="password" autocomplete="off" placeholder="GitHub token">
-          <button class="btn btn-primary" id="btnConnectGithub">Connect</button>
-        </div>
-      </div>
-    </section>
 
     <section class="metrics-grid">
       <div class="metric-card card">
@@ -140,17 +127,15 @@
       <div class="modal-header"><h3>＋ Add Managed Git Project</h3><button class="modal-close" id="btnCloseProjectModal">&times;</button></div>
       <div class="modal-body">
         <div class="form-group">
-          <label for="projectSource">Git project path / URL</label>
-          <input id="projectSource" class="form-input" placeholder="E:\Game studio\game  |  git@github.com:huyker/game.git  |  huyker/game">
-          <span class="form-help">The selected folder is the project Git repository. Orchestrator reads its .git metadata directly; task execution uses a separate git worktree so your main working tree is not modified.</span>
-          <div id="projectDetected" class="config-box hidden" style="margin-top:10px"></div>
+          <label for="projectRepository">GitHub repository</label>
+          <input id="projectRepository" class="form-input" placeholder="https://github.com/huyker/game.git">
+          <span class="form-help">Orchestrator will clone the repository under the configured managed root if it is missing, or fetch/pull the latest version if it already exists.</span>
         </div>
-        <div class="form-grid">
-          <div class="form-group"><label for="projectId">Project ID <span class="label-muted">(optional)</span></label><input id="projectId" class="form-input" placeholder="gamegit"></div>
-          <div class="form-group"><label for="projectBranch">Default branch</label><input id="projectBranch" class="form-input" value="main"></div>
+        <div class="config-box">
+          <b>Managed project root</b>
+          <pre id="projectManagedRoot">Loading…</pre>
         </div>
-        <div class="form-group"><label for="projectIssuesRepo">Issue repo <span class="label-muted">(optional)</span></label><input id="projectIssuesRepo" class="form-input" placeholder="huyker/game"></div>
-        <div id="projectAddStatus" class="form-help"></div>
+        <div id="projectAddStatus" class="form-help" style="margin-top:10px"></div>
       </div>
       <div class="modal-footer"><button class="btn btn-secondary" id="btnCancelProject">Cancel</button><button class="btn btn-primary" id="btnSaveProject">Add & Auto Sync</button></div>
     </div>

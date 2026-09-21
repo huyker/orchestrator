@@ -4,8 +4,6 @@ import hashlib
 import json
 import os
 import re
-import shutil
-import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -38,28 +36,6 @@ ALL_LABELS = {
 }
 
 
-def discover_github_token() -> str:
-    for key in ("GITHUB_TOKEN", "GH_TOKEN"):
-        value = os.getenv(key, "").strip()
-        if value:
-            return value
-    gh = shutil.which("gh")
-    if gh:
-        try:
-            proc = subprocess.run(
-                [gh, "auth", "token"],
-                text=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
-                timeout=5,
-            )
-            if proc.returncode == 0 and proc.stdout.strip():
-                return proc.stdout.strip()
-        except (OSError, subprocess.SubprocessError):
-            pass
-    return ""
-
-
 @dataclass(frozen=True)
 class Settings:
     control_repo: str
@@ -81,7 +57,7 @@ class Settings:
     @classmethod
     def from_env(cls) -> "Settings":
         control_repo = os.getenv("ORCH_CONTROL_REPO", "").strip()
-        token = discover_github_token()
+        token = ""
         if control_repo and "/" not in control_repo:
             raise ValueError("ORCH_CONTROL_REPO must be OWNER/REPO when provided")
 
@@ -113,7 +89,7 @@ class Settings:
             token=token,
             registry_file=registry_file,
             runtime_dir=runtime,
-            workspace_root=Path(os.getenv("ORCH_WORKSPACE_ROOT", runtime / "repos")).resolve(),
+            workspace_root=Path(os.getenv("ORCH_MANAGED_ROOT", runtime / "managed-projects")).resolve(),
             poll_interval=max(2, int(os.getenv("ORCH_POLL_INTERVAL", "5"))),
             git_transport=os.getenv("ORCH_GIT_TRANSPORT", "ssh").strip().lower(),
             agy_bin=os.getenv("ORCH_AGY_BIN", "agy").strip(),
