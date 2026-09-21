@@ -32,7 +32,7 @@ from .models import (
     iter_commands,
     parse_task,
 )
-from .project import Registry, load_catalog, resolve_profiles, safe_path
+from .project import Registry, inspect_project_source, load_catalog, resolve_profiles, safe_path
 from .state import StateStore
 from .workspace import WorkspaceManager
 
@@ -70,6 +70,9 @@ class OrchestratorEngine:
 
     def github_auth_status(self) -> dict[str, Any]:
         return dict(self._github_auth)
+
+    def inspect_managed_project_source(self, source: str) -> dict[str, Any]:
+        return inspect_project_source(source)
 
     def add_managed_project(
         self,
