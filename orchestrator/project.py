@@ -102,6 +102,19 @@ class Registry:
         self.projects[pid] = entry
         return entry
 
+    def remove_project(self, project_id: str) -> dict[str, Any]:
+        pid = str(project_id or "").strip()
+        if pid not in self.projects:
+            raise ValueError(f"Project not found: {pid}")
+        removed = self.projects.pop(pid)
+        raw = json.loads(self.path.read_text(encoding="utf-8"))
+        raw["projects"] = [p for p in raw.get("projects", []) if p.get("id") != pid]
+        tmp = self.path.with_suffix(self.path.suffix + ".tmp")
+        tmp.write_text(json.dumps(raw, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        tmp.replace(self.path)
+        return removed
+
+
 
 def safe_path(root: Path, rel: str) -> Path:
     rel_path = Path(rel)

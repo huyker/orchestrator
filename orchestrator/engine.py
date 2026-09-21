@@ -140,9 +140,38 @@ class OrchestratorEngine:
             "already_registered": False,
         }
 
+    def remove_managed_project(self, project_id: str) -> dict[str, Any]:
+        self.registry = Registry(self.settings.registry_file)
+        removed = self.registry.remove_project(project_id)
+        self.state.add_event("project_removed", {
+            "project": removed.get("id"),
+            "repo": removed.get("repo"),
+        })
+        return removed
+
+    def sync_single_project(self, project_id: str) -> dict[str, Any]:
+        self.registry = Registry(self.settings.registry_file)
+        project = self.registry.resolve(project_id)
+        repo = project["repo"]
+        branch = project.get("default_branch")
+        root = self.workspace.sync_project(repo, branch)
+        info = self.workspace.inspect_repo(root)
+        self.state.add_event("project_synced", {
+            "project": project["id"],
+            "repo": repo,
+            "managed_path": str(root),
+        })
+        return {
+            **project,
+            "managed_path": str(root),
+            "repo_info": info,
+            "synced": True,
+        }
+
 
     @staticmethod
     def _lifecycle(status: str, labels: list[str] | None = None) -> dict[str, Any]:
+
         labels = labels or []
         stages = [
             {"id": "READY", "label": "Ready"},
@@ -323,10 +352,32 @@ class OrchestratorEngine:
         finally:
             self._sync_lock.release()
 
-    def project_snapshot(self) -> list[dict[str, Any]]:
+    def project_snapshot(self, issues: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
         rows = []
+        all_issues = issues or []
         for project in self.registry.list():
             root = self.workspace.repo_dir(project["repo"])
+            p_issues = [
+                x for x in all_issues
+                if (
+                    x.get("issue_repo") == project.get("issues_repo")
+                    or project["id"] in x.get("project_ids", [])
+                    or (x.get("task") or {}).get("project") == project["id"]
+                )
+            ]
+            ready_count = sum(1 for x in p_issues if x.get("lifecycle", {}).get("status") == "READY")
+            in_prog_count = sum(1 for x in p_issues if x.get("lifecycle", {}).get("stage_index") in (1, 2, 3))
+            review_count = sum(1 for x in p_issues if x.get("lifecycle", {}).get("stage_index") == 4)
+            done_count = sum(1 for x in p_issues if x.get("lifecycle", {}).get("stage_index") == 5)
+            blocked_count = sum(1 for x in p_issues if x.get("lifecycle", {}).get("is_blocked"))
+            task_metrics = {
+                "total": len(p_issues),
+                "ready": ready_count,
+                "in_progress": in_prog_count,
+                "review": review_count,
+                "done": done_count,
+                "blocked": blocked_count,
+            }
             row: dict[str, Any] = {
                 "id": project["id"],
                 "repo": project["repo"],
@@ -334,6 +385,14 @@ class OrchestratorEngine:
                 "managed_path": str(root),
                 "default_branch": project.get("default_branch", "main"),
                 "synced": root.exists(),
+                "task_metrics": task_metrics,
+                "total_tasks": len(p_issues),
+                "ready_tasks": ready_count,
+                "in_progress_tasks": in_prog_count,
+                "review_tasks": review_count,
+                "done_tasks": done_count,
+                "blocked_tasks": blocked_count,
+                "issues": p_issues,
             }
             if root.exists():
                 try:
@@ -348,9 +407,13 @@ class OrchestratorEngine:
                         "task_profile_configs": catalog["tasks"],
                         "plans": catalog["plans"][:100],
                         "graphify": self.graphify.status(root, catalog["manifest"]),
+                        "import_status": "synced",
                     })
                 except Exception as exc:
                     row["error"] = str(exc)
+                    row["import_status"] = "error"
+            else:
+                row["import_status"] = "needs_sync"
             rows.append(row)
         return rows
 
@@ -1140,7 +1203,7 @@ class OrchestratorEngine:
             "active": active,
             "active_lifecycle": active_lifecycle,
             "metrics": metrics,
-            "projects": self.project_snapshot(),
+            "projects": self.project_snapshot(queue),
             "issues": queue,
             "issues_error": queue_error,
             "events": self.state.recent_events(100),

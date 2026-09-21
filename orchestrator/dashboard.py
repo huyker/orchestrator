@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import threading
 import urllib.request
 from http import HTTPStatus
@@ -70,10 +71,51 @@ class DashboardHandler(BaseHTTPRequestHandler):
         try:
             if route == "/api/projects/add":
                 payload = self._read_json()
-                entry = self.engine.add_managed_project(
-                    str(payload.get("repository") or payload.get("source") or "")
-                )
-                self._json({"ok": True, "project": entry})
+                raw_sources = payload.get("repositories")
+                if not raw_sources:
+                    single = str(payload.get("repository") or payload.get("source") or "")
+                    if "\n" in single or "," in single:
+                        raw_sources = [s.strip() for s in re.split(r"[\r\n,]+", single) if s.strip()]
+                    elif single.strip():
+                        raw_sources = [single.strip()]
+                    else:
+                        raw_sources = []
+                elif isinstance(raw_sources, str):
+                    raw_sources = [s.strip() for s in re.split(r"[\r\n,]+", raw_sources) if s.strip()]
+
+                if not raw_sources:
+                    raise ValueError("No repository specified for import")
+
+                results = []
+                for src in raw_sources:
+                    try:
+                        entry = self.engine.add_managed_project(src)
+                        results.append({"ok": True, "source": src, "project": entry})
+                    except Exception as err:
+                        results.append({"ok": False, "source": src, "error": str(err)})
+
+                first_successful = next((r["project"] for r in results if r.get("ok")), None)
+                all_failed = all(not r.get("ok") for r in results)
+                if all_failed and len(results) == 1:
+                    raise RuntimeError(results[0].get("error") or "Failed to add project")
+
+                self._json({
+                    "ok": not all_failed,
+                    "results": results,
+                    "projects": [r["project"] for r in results if r.get("ok")],
+                    "project": first_successful or (results[0].get("project") if results else None),
+                    "total": len(results),
+                    "succeeded": sum(1 for r in results if r.get("ok")),
+                    "failed": sum(1 for r in results if not r.get("ok")),
+                })
+                return
+            if route == "/api/projects/remove":
+                payload = self._read_json()
+                project_id = str(payload.get("project_id") or payload.get("id") or "").strip()
+                if not project_id:
+                    raise ValueError("Missing project_id")
+                removed = self.engine.remove_managed_project(project_id)
+                self._json({"ok": True, "removed": removed})
                 return
             if route == "/api/control/pause":
                 self.engine.pause()
@@ -96,11 +138,17 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._json({"ok": True, "message": "retry command posted to active GitHub Issue"})
                 return
             prefix = "/api/projects/"
-            suffix = "/graphify/update"
-            if route.startswith(prefix) and route.endswith(suffix):
-                project_id = route[len(prefix) : -len(suffix)].strip("/")
+            suffix_graphify = "/graphify/update"
+            suffix_sync = "/sync"
+            if route.startswith(prefix) and route.endswith(suffix_graphify):
+                project_id = route[len(prefix) : -len(suffix_graphify)].strip("/")
                 result = self.engine.update_graphify(project_id)
                 self._json({"ok": True, "graphify": result})
+                return
+            if route.startswith(prefix) and route.endswith(suffix_sync):
+                project_id = route[len(prefix) : -len(suffix_sync)].strip("/")
+                result = self.engine.sync_single_project(project_id)
+                self._json({"ok": True, "project": result})
                 return
             self._json({"error": "not found"}, 404)
         except Exception as exc:

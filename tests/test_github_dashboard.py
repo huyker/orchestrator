@@ -34,12 +34,17 @@ class FakeEngine:
     def add_managed_project(self, source):
         self.added_project={"repo":"acme/demo","id":"demo","issues_repo":"acme/demo","default_branch":"main","managed_path":"E:/acme/demo"}
         return self.added_project
+    def remove_managed_project(self, project_id):
+        return {"id": project_id, "removed": True}
+    def sync_single_project(self, project_id):
+        return {"id": project_id, "synced": True}
     def pause(self): self.paused=True
     def resume(self): self.paused=False
     def tick(self): pass
     def sync_projects(self): return []
     def request_retry(self): pass
     def update_graphify(self, project): return {"project":project}
+
 
 
 class GitHubDashboardTests(unittest.TestCase):
@@ -104,6 +109,42 @@ class GitHubDashboardTests(unittest.TestCase):
         finally:
             server.shutdown(); server.server_close()
 
+    def test_dashboard_can_batch_add_and_remove_project(self):
+        engine = FakeEngine()
+        server = make_server(engine, "127.0.0.1", 0)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            port = server.server_address[1]
+            payload = json.dumps({"repositories": ["https://github.com/acme/demo1.git", "acme/demo2"]}).encode()
+            req = urllib.request.Request(
+                f"http://127.0.0.1:{port}/api/projects/add",
+                data=payload,
+                method="POST",
+                headers={"X-Orchestrator-UI": "1", "Content-Type": "application/json"},
+            )
+            with urllib.request.urlopen(req) as response:
+                data = json.loads(response.read())
+            self.assertTrue(data["ok"])
+            self.assertEqual(data["total"], 2)
+            self.assertEqual(data["succeeded"], 2)
+
+            del_payload = json.dumps({"project_id": "demo"}).encode()
+            del_req = urllib.request.Request(
+                f"http://127.0.0.1:{port}/api/projects/remove",
+                data=del_payload,
+                method="POST",
+                headers={"X-Orchestrator-UI": "1", "Content-Type": "application/json"},
+            )
+            with urllib.request.urlopen(del_req) as response:
+                del_data = json.loads(response.read())
+            self.assertTrue(del_data["ok"])
+            self.assertTrue(del_data["removed"]["removed"])
+        finally:
+            server.shutdown()
+            server.server_close()
+
 
 if __name__ == "__main__":
     unittest.main()
+

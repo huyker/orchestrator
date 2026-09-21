@@ -1,144 +1,341 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="vi">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Orchestrator Local Control Plane</title>
+  <title>Orchestrator Control Plane - Quản Lý Dự Án Tự Động</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/web/style.css">
 </head>
 <body>
-  <div class="app-container">
-    <header class="top-nav">
-      <div class="logo-area">
-        <div class="arcane-gem"></div>
-        <div>
-          <h1 class="logo-title">ORCHESTRATOR LOCAL CONTROL PLANE</h1>
-          <p class="logo-subtitle">Autonomous Multi-Project Agent Orchestrator · GitHub Issue Runtime · Graphify Context</p>
+  <div class="app-layout">
+    <!-- Top Navigation -->
+    <header class="top-nav card">
+      <div class="nav-brand">
+        <div class="brand-badge">
+          <div class="brand-gem"></div>
+        </div>
+        <div class="brand-text">
+          <div class="brand-title">ORCHESTRATOR <span class="brand-ver">v2.0</span></div>
+          <div class="brand-desc">Hệ Thống Quản Trị Đa Dự Án & Agent Tự Động</div>
         </div>
       </div>
-      <div class="header-badges">
-        <div class="badge" id="githubBadge">GitHub: CHECKING</div>
-        <div class="badge hot-reload-badge">🔥 Auto Sync: <span id="syncBadge">WAITING</span></div>
-        <div class="badge" id="selfUpdateBadge">Updater: CHECKING</div>
-        <div class="badge branch-badge">Projects: <span id="projectCount">0</span></div>
-        <div class="badge status-badge">Mode: <span id="modeBadge">STARTING</span></div>
+
+      <div class="nav-tabs">
+        <button class="nav-tab active" id="tabBtnDashboard" data-tab="dashboard">
+          <span class="tab-icon">📁</span>
+          <span class="tab-label">Dashboard Dự Án</span>
+          <span class="tab-badge" id="navProjectCount">0</span>
+        </button>
+        <button class="nav-tab" id="tabBtnDetail" data-tab="detail">
+          <span class="tab-icon">📊</span>
+          <span class="tab-label" id="detailTabTitle">Chi Tiết Dự Án</span>
+          <span class="tab-pill" id="detailActivePill">Chưa chọn</span>
+        </button>
+        <button class="nav-tab" id="tabBtnRuntime" data-tab="runtime">
+          <span class="tab-icon">⚡</span>
+          <span class="tab-label">Console & Logs</span>
+          <span class="live-dot" id="navLiveDot"></span>
+        </button>
+      </div>
+
+      <div class="nav-status-group">
+        <div class="status-pill" id="githubBadge">
+          <span class="status-dot"></span> GitHub: Kiểm tra…
+        </div>
+        <div class="status-pill" id="modeBadge">
+          <span class="status-dot"></span> Engine: Tự động
+        </div>
+        <div class="nav-actions">
+          <button class="btn btn-sm btn-outline" id="btnPauseResume">⏸ Tạm dừng</button>
+          <button class="btn btn-sm btn-primary" id="btnSyncAll" title="Đồng bộ tất cả dự án">↻ Đồng Bộ</button>
+        </div>
       </div>
     </header>
 
-    <section class="action-bar card">
-      <div class="controls-left">
-        <button class="btn btn-primary btn-glow" id="btnResume"><span class="pulse-indicator"></span> ⚡ Start / Resume</button>
-        <button class="btn btn-secondary" id="btnPause">⏸ Pause</button>
-        <button class="btn btn-purple" id="btnRetry">↻ Retry Active Task</button>
-        <button class="btn btn-info" id="btnAddProject">＋ Add Project</button>
+    <!-- Global Notice Banner -->
+    <div id="blockerBanner" class="blocker-banner hidden">
+      <div class="blocker-icon">⚠️</div>
+      <div class="blocker-content">
+        <div class="blocker-title">Thông Báo Hệ Thống</div>
+        <div id="blockerText" class="blocker-msg"></div>
       </div>
-      <div class="controls-right">
-        <span class="sync-indicator" id="managedRootLabel">Managed root: —</span>
-        <span class="sync-indicator" id="lastSyncLabel">Last sync: never</span>
-        <button class="btn-sm" id="btnRefresh">Refresh</button>
-      </div>
-    </section>
+      <button class="btn-close-banner" onclick="clearBlock()">&times;</button>
+    </div>
 
-    <div id="blockerBanner" class="blocker-banner hidden"><span>⚠️ </span><span id="blockerText"></span></div>
-
-    <section class="metrics-grid">
-      <div class="metric-card card">
-        <div class="metric-label">Current Active Task</div>
-        <div class="metric-value highlight-cyan" id="currentTaskTitle">None (Idle)</div>
-        <div class="metric-sub" id="currentTaskSub">Waiting for managed-project Issues</div>
-      </div>
-      <div class="metric-card card">
-        <div class="metric-label">Ready Tasks</div>
-        <div class="metric-value highlight-green" id="readyCount">0</div>
-        <div class="metric-sub">Issues labelled orch:ready</div>
-      </div>
-      <div class="metric-card card">
-        <div class="metric-label">In Progress / QA</div>
-        <div class="metric-value highlight-gold" id="inProgressCount">0</div>
-        <div class="metric-sub">Implement · Validate · Internal Review</div>
-      </div>
-      <div class="metric-card card">
-        <div class="metric-label">GPT Review</div>
-        <div class="metric-value highlight-purple" id="reviewCount">0</div>
-        <div class="metric-sub">Waiting external review / merge</div>
-      </div>
-      <div class="metric-card card">
-        <div class="metric-label">Blocked</div>
-        <div class="metric-value highlight-red" id="blockedCount">0</div>
-        <div class="metric-sub">Requires retry / user / runtime fix</div>
-      </div>
-    </section>
-
-    <section class="card lifecycle-overview-card">
-      <div class="panel-header">
-        <h2>GLOBAL TASK LIFECYCLE</h2>
-        <span class="count-pill" id="openTaskCount">0 open tasks</span>
-      </div>
-      <div id="lifecycleOverview" class="lifecycle-overview"></div>
-    </section>
-
-    <section class="live-telemetry card">
-      <div class="telemetry-header">
-        <div class="telemetry-title-group">
-          <div class="status-indicator-dot" id="liveDot"></div>
-          <h2>LIVE AGENT EXECUTION & PROCESS TELEMETRY</h2>
+    <!-- MAIN VIEW CONTAINER -->
+    <main class="views-wrapper">
+      <!-- ================= TAB 1: DASHBOARD DỰ ÁN ================= -->
+      <section id="viewDashboard" class="view-section active">
+        <!-- KPI Metrics Header -->
+        <div class="metrics-grid">
+          <div class="metric-card card">
+            <div class="metric-icon-wrap cyan">📁</div>
+            <div class="metric-content">
+              <div class="metric-label">Tổng Dự Án Đang Quản Lý</div>
+              <div class="metric-value highlight-cyan" id="dashTotalProjects">0</div>
+              <div class="metric-sub">Đã đồng bộ vào managed root</div>
+            </div>
+          </div>
+          <div class="metric-card card">
+            <div class="metric-icon-wrap emerald">📋</div>
+            <div class="metric-content">
+              <div class="metric-label">Tổng Số Task (Issues)</div>
+              <div class="metric-value highlight-emerald" id="dashTotalTasks">0</div>
+              <div class="metric-sub">Thuộc tất cả các dự án</div>
+            </div>
+          </div>
+          <div class="metric-card card">
+            <div class="metric-icon-wrap amber">⏳</div>
+            <div class="metric-content">
+              <div class="metric-label">Số Task Chờ Xử Lý</div>
+              <div class="metric-value highlight-amber" id="dashReadyTasks">0</div>
+              <div class="metric-sub">Trạng thái orch:ready</div>
+            </div>
+          </div>
+          <div class="metric-card card">
+            <div class="metric-icon-wrap purple">⚡</div>
+            <div class="metric-content">
+              <div class="metric-label">Đang Xử Lý / Review</div>
+              <div class="metric-value highlight-purple" id="dashActiveTasks">0</div>
+              <div class="metric-sub">Implement · QA · Review</div>
+            </div>
+          </div>
         </div>
-        <div class="telemetry-badges">
-          <span class="telemetry-pill" id="liveLifecycleBadge">STATE: IDLE</span>
-          <span class="telemetry-pill" id="liveProjectBadge">PROJECT: NONE</span>
-          <span class="telemetry-pill" id="liveIssueBadge">ISSUE: NONE</span>
-          <span class="telemetry-pill" id="liveReviewBadge">REVIEW: 0</span>
-        </div>
-      </div>
-      <div class="telemetry-meta-row">
-        <div class="meta-item"><span class="meta-label">Task:</span><span class="meta-val" id="liveTaskVal">None</span></div>
-        <div class="meta-item"><span class="meta-label">Branch:</span><span class="meta-val font-mono" id="liveBranchVal">None</span></div>
-        <div class="meta-item"><span class="meta-label">PR:</span><span class="meta-val" id="livePrVal">None</span></div>
-        <div class="meta-item"><span class="meta-label">Auto Sync:</span><span class="meta-val font-mono" id="liveSyncVal">Never</span></div>
-      </div>
-      <div class="terminal-container">
-        <div class="terminal-toolbar"><span class="terminal-label">ORCHESTRATOR EVENT STREAM</span><button class="btn-xs" id="btnClearEvents">Clear display</button></div>
-        <div class="terminal-body font-mono" id="liveTerminal"><div class="term-line term-system">[SYSTEM] Waiting for runtime events...</div></div>
-      </div>
-    </section>
 
-    <main class="content-split">
-      <section class="tasks-panel card">
-        <div class="panel-header"><h2>MANAGED PROJECT TASKS</h2><span class="count-pill" id="totalTasksCount">0 tasks</span></div>
-        <div class="task-list" id="taskList"><div class="placeholder-msg">Waiting for Issue queue...</div></div>
+        <!-- Section Import Dự Án (1 hoặc nhiều cùng lúc) -->
+        <section class="import-section card">
+          <div class="import-header">
+            <div class="import-title-group">
+              <div class="section-badge">QUẢN LÝ DỰ ÁN</div>
+              <h2>📥 Import Dự Án Git (Hỗ Trợ 1 Hoặc Nhiều Dự Án)</h2>
+              <p class="section-desc">Nhập đường dẫn GitHub repository hoặc dạng <code>owner/repo</code>. Bạn có thể nhập nhiều dự án cùng lúc (mỗi dòng một repo hoặc cách nhau bởi dấu phẩy).</p>
+            </div>
+            <div class="managed-root-badge font-mono" id="dashManagedRoot">
+              Thư mục: Đang tải…
+            </div>
+          </div>
+
+          <div class="import-form">
+            <div class="input-container">
+              <textarea
+                id="importInput"
+                class="import-textarea"
+                rows="3"
+                placeholder="Ví dụ nhập 1 hoặc nhiều repo:&#10;huyker/game&#10;https://github.com/owner/another-project.git&#10;git@github.com:team/studio-game.git"
+              ></textarea>
+              <div class="import-hints">
+                <span>💡 Hỗ trợ: URL HTTPS, SSH, hoặc định dạng ngắn <code>owner/repo</code>.</span>
+                <span id="importInputCounter">0 dòng</span>
+              </div>
+            </div>
+
+            <div class="import-actions">
+              <button class="btn btn-primary btn-glow" id="btnStartImport">
+                <span class="btn-icon">🚀</span> Bắt Đầu Import
+              </button>
+              <button class="btn btn-secondary" id="btnClearImport">Xóa trắng</button>
+            </div>
+          </div>
+
+          <!-- Live Import Feedback Box -->
+          <div id="importFeedback" class="import-feedback-box hidden">
+            <div class="feedback-header">
+              <span class="feedback-title" id="feedbackTitle">Trạng thái Import</span>
+              <button class="btn-xs" id="btnCloseFeedback">Đóng</button>
+            </div>
+            <div id="feedbackList" class="feedback-list"></div>
+          </div>
+        </section>
+
+        <!-- Section Danh Sách Các Dự Án Đã Import -->
+        <section class="projects-section">
+          <div class="section-toolbar card">
+            <div class="toolbar-left">
+              <h3 class="section-title">DANH SÁCH DỰ ÁN ĐÃ IMPORT</h3>
+              <span class="count-pill" id="projectsPill">0 dự án</span>
+            </div>
+            <div class="toolbar-right">
+              <div class="search-box">
+                <span class="search-icon">🔍</span>
+                <input type="text" id="searchProjects" class="search-input" placeholder="Tìm kiếm dự án theo tên hoặc repo…">
+              </div>
+              <button class="btn btn-sm btn-outline" id="btnRefreshList">Làm mới</button>
+            </div>
+          </div>
+
+          <!-- Projects Grid Container -->
+          <div id="projectsGrid" class="projects-grid">
+            <div class="empty-state card">
+              <div class="empty-icon">📁</div>
+              <h3>Chưa có dự án nào được import</h3>
+              <p>Hãy nhập URL hoặc tên repository ở khung trên và bấm "Bắt Đầu Import".</p>
+            </div>
+          </div>
+        </section>
       </section>
-      <section class="logs-panel card">
-        <div class="panel-header"><h2>REGISTERED PROJECTS</h2><button class="btn-sm" id="btnAddProjectSecondary">＋ Add Project</button></div>
-        <div class="project-list" id="projectList"></div>
+
+      <!-- ================= TAB 2: CHI TIẾT DỰ ÁN ================= -->
+      <section id="viewDetail" class="view-section">
+        <div class="detail-top-bar card">
+          <button class="btn btn-secondary" id="btnBackToDashboard">
+            ← Quay lại Dashboard
+          </button>
+          <div class="project-switcher-wrap">
+            <label for="projectDetailSelect">Dự án đang xem:</label>
+            <select id="projectDetailSelect" class="form-select"></select>
+          </div>
+          <div class="detail-actions">
+            <button class="btn btn-sm btn-secondary" id="btnSyncCurrentProject">🔄 Đồng bộ mã nguồn</button>
+            <button class="btn btn-sm btn-purple" id="btnUpdateGraphify">🧠 Cập nhật Graphify</button>
+            <button class="btn btn-sm btn-danger-outline" id="btnRemoveCurrentProject">🗑️ Xóa dự án</button>
+          </div>
+        </div>
+
+        <!-- Project Hero Card -->
+        <div class="project-hero card" id="projectHeroCard">
+          <div class="hero-left">
+            <div class="hero-id-badge font-mono" id="detailProjectId">project-id</div>
+            <h1 class="hero-repo" id="detailRepoName">owner/repo</h1>
+            <div class="hero-meta-row">
+              <span class="hero-meta-item">
+                <span class="meta-label">Branch:</span>
+                <span class="meta-val font-mono" id="detailBranch">main</span>
+              </span>
+              <span class="hero-meta-item">
+                <span class="meta-label">Trạng thái Git:</span>
+                <span class="meta-val" id="detailGitDirty">Sạch sẽ (Clean)</span>
+              </span>
+              <span class="hero-meta-item">
+                <span class="meta-label">Graphify:</span>
+                <span class="meta-val" id="detailGraphify">Đang kiểm tra</span>
+              </span>
+              <span class="hero-meta-item">
+                <span class="meta-label">Thư mục local:</span>
+                <span class="meta-val font-mono" id="detailPath">--</span>
+              </span>
+            </div>
+          </div>
+          <div class="hero-right">
+            <a href="#" target="_blank" class="btn btn-outline" id="btnOpenGithub">
+              Mở trên GitHub ↗
+            </a>
+          </div>
+        </div>
+
+        <!-- Project Task Stats Summary -->
+        <div class="detail-stats-grid">
+          <div class="detail-stat-card card">
+            <div class="stat-label">Tổng Số Task</div>
+            <div class="stat-number highlight-cyan" id="detailTotalTasks">0</div>
+          </div>
+          <div class="detail-stat-card card">
+            <div class="stat-label">Chờ Xử Lý (Ready)</div>
+            <div class="stat-number highlight-amber" id="detailReadyTasks">0</div>
+          </div>
+          <div class="detail-stat-card card">
+            <div class="stat-label">Đang Xử Lý (In Progress)</div>
+            <div class="stat-number highlight-gold" id="detailInProgressTasks">0</div>
+          </div>
+          <div class="detail-stat-card card">
+            <div class="stat-label">Chờ GPT Review</div>
+            <div class="stat-number highlight-purple" id="detailReviewTasks">0</div>
+          </div>
+          <div class="detail-stat-card card">
+            <div class="stat-label">Hoàn Thành (Done)</div>
+            <div class="stat-number highlight-emerald" id="detailDoneTasks">0</div>
+          </div>
+        </div>
+
+        <!-- Project Split Content: Tasks & Profiles -->
+        <div class="detail-split">
+          <!-- Tasks Column -->
+          <div class="detail-tasks-col card">
+            <div class="panel-header">
+              <div class="panel-title-group">
+                <h3>DANH SÁCH TASKS & TIẾN ĐỘ</h3>
+                <span class="count-pill" id="detailTaskFilterCount">0 tasks</span>
+              </div>
+              <div class="task-filters">
+                <button class="filter-btn active" data-filter="all">Tất cả</button>
+                <button class="filter-btn" data-filter="ready">Chờ xử lý</button>
+                <button class="filter-btn" data-filter="in_progress">Đang làm</button>
+                <button class="filter-btn" data-filter="review">Review</button>
+                <button class="filter-btn" data-filter="done">Xong</button>
+              </div>
+            </div>
+
+            <div id="detailTaskList" class="detail-task-list">
+              <div class="placeholder-msg">Đang tải danh sách tasks của dự án…</div>
+            </div>
+          </div>
+
+          <!-- Configuration & Manifest Column -->
+          <div class="detail-config-col card">
+            <div class="panel-header">
+              <h3>CẤU HÌNH & CONTEXT DỰ ÁN</h3>
+            </div>
+            <div class="config-tabs-nav">
+              <button class="cfg-tab active" data-cfg="agents">Agent Profiles</button>
+              <button class="cfg-tab" data-cfg="tasks">Task Profiles</button>
+              <button class="cfg-tab" data-cfg="plans">Kế Hoạch (Plans)</button>
+              <button class="cfg-tab" data-cfg="raw">Raw Manifest</button>
+            </div>
+            <div class="config-content" id="configContent">
+              <pre id="configDisplay">Đang tải cấu hình…</pre>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ================= TAB 3: RUNTIME & LOGS ================= -->
+      <section id="viewRuntime" class="view-section">
+        <!-- Live Agent Execution Telemetry -->
+        <div class="live-telemetry card">
+          <div class="telemetry-header">
+            <div class="telemetry-title-group">
+              <div class="status-indicator-dot" id="liveDot"></div>
+              <h2>LIVE AGENT EXECUTION & TELEMETRY</h2>
+            </div>
+            <div class="telemetry-badges">
+              <span class="telemetry-pill" id="liveLifecycleBadge">STATE: IDLE</span>
+              <span class="telemetry-pill" id="liveProjectBadge">PROJECT: NONE</span>
+              <span class="telemetry-pill" id="liveIssueBadge">ISSUE: NONE</span>
+              <span class="telemetry-pill" id="liveReviewBadge">REVIEW: 0</span>
+            </div>
+          </div>
+          <div class="telemetry-meta-row">
+            <div class="meta-item">
+              <span class="meta-label">Task Hiện Tại:</span>
+              <span class="meta-val font-mono" id="liveTaskVal">None</span>
+            </div>
+            <div class="meta-item">
+              <span class="meta-label">Branch Đang Chạy:</span>
+              <span class="meta-val font-mono" id="liveBranchVal">None</span>
+            </div>
+            <div class="meta-item">
+              <span class="meta-label">Pull Request:</span>
+              <span class="meta-val font-mono" id="livePrVal">None</span>
+            </div>
+            <div class="meta-item">
+              <span class="meta-label">Tự Động Đồng Bộ:</span>
+              <span class="meta-val font-mono" id="liveSyncVal">Never</span>
+            </div>
+          </div>
+          <div class="terminal-container">
+            <div class="terminal-toolbar">
+              <span class="terminal-label">SỰ KIỆN RUNTIME (EVENT STREAM)</span>
+              <button class="btn-xs" id="btnClearEvents">Xóa màn hình</button>
+            </div>
+            <div class="terminal-body font-mono" id="liveTerminal">
+              <div class="term-line term-system">[SYSTEM] Đang chờ sự kiện từ hệ thống…</div>
+            </div>
+          </div>
+        </div>
       </section>
     </main>
-
-    <section class="card selected-project-card">
-      <div class="panel-header">
-        <h2>PROJECT CONTEXT / AGENTS / GRAPHIFY</h2>
-        <select id="projectSelect" class="form-input compact-select"></select>
-      </div>
-      <div id="selectedProject" class="selected-project-grid"></div>
-    </section>
-  </div>
-
-  <div class="modal-backdrop hidden" id="projectModal">
-    <div class="modal-card card">
-      <div class="modal-header"><h3>＋ Add Managed Git Project</h3><button class="modal-close" id="btnCloseProjectModal">&times;</button></div>
-      <div class="modal-body">
-        <div class="form-group">
-          <label for="projectRepository">GitHub repository</label>
-          <input id="projectRepository" class="form-input" placeholder="https://github.com/huyker/game.git">
-          <span class="form-help">Orchestrator will clone the repository under the configured managed root if it is missing, or fetch/pull the latest version if it already exists.</span>
-        </div>
-        <div class="config-box">
-          <b>Managed project root</b>
-          <pre id="projectManagedRoot">Loading…</pre>
-        </div>
-        <div id="projectAddStatus" class="form-help" style="margin-top:10px"></div>
-      </div>
-      <div class="modal-footer"><button class="btn btn-secondary" id="btnCancelProject">Cancel</button><button class="btn btn-primary" id="btnSaveProject">Add & Auto Sync</button></div>
-    </div>
   </div>
 
   <script src="/web/app.js"></script>
