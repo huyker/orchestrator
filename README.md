@@ -55,13 +55,15 @@ cd orchestrator
 cp .env.example .env
 ```
 
-Edit `.env` and set at least:
+Edit `.env` and set only the GitHub token:
 
 ```env
-ORCH_CONTROL_REPO=huyker/orchestrator
 GITHUB_TOKEN=github_pat_xxx
-ORCH_ALLOWED_AUTHORS=huyker
 ```
+
+`ORCH_CONTROL_REPO` is no longer required. Managed-project task communication is routed from `projects.json -> issues_repo`.
+
+`ORCH_ALLOWED_AUTHORS` is also optional for the normal setup; when omitted, the app infers repository owners from `projects.json` (for example `huyker/game -> huyker`).
 
 Then run:
 
@@ -212,8 +214,8 @@ Graphify never activates work and never overrides Issue requirements or project 
 Important settings:
 
 ```env
-ORCH_CONTROL_REPO=huyker/orchestrator
 GITHUB_TOKEN=
+# ORCH_CONTROL_REPO=huyker/orchestrator   # optional legacy fallback
 ORCH_PROJECT_REGISTRY=projects.json
 ORCH_RUNTIME_DIR=.orchestrator-runtime
 ORCH_WORKSPACE_ROOT=.orchestrator-runtime/repos
@@ -226,7 +228,7 @@ ORCH_TEST_TIMEOUT=600
 
 ORCH_AGY_BIN=agy
 ORCH_AGENT_EFFORT=medium
-ORCH_ALLOWED_AUTHORS=huyker
+# ORCH_ALLOWED_AUTHORS=huyker             # optional; inferred from registry by default
 
 ORCH_GIT_TRANSPORT=ssh
 
