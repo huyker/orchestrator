@@ -44,14 +44,17 @@ def main() -> None:
     engine = OrchestratorEngine(settings)
 
     if args.command == "serve":
-        engine.ensure_labels()
         serve_dashboard(engine, settings.dashboard_host, settings.dashboard_port, with_engine_loop=True)
     elif args.command == "dashboard":
         serve_dashboard(engine, settings.dashboard_host, settings.dashboard_port, with_engine_loop=False)
     elif args.command == "worker":
+        if not engine.state.is_dashboard_verified():
+            raise SystemExit("Dashboard bootstrap is not verified. Run 'issue-orchestrator dashboard' or 'issue-orchestrator serve' first.")
         engine.ensure_labels()
         engine.serve_loop(threading.Event())
     elif args.command == "once":
+        if not engine.state.is_dashboard_verified():
+            raise SystemExit("Dashboard bootstrap is not verified. Issue processing is disabled.")
         engine.tick()
     elif args.command == "sync":
         print(json.dumps(engine.sync_projects(), ensure_ascii=False, indent=2))
