@@ -75,6 +75,17 @@ class ModelsStateTests(unittest.TestCase):
             self.assertEqual(registry.resolve("gamegit")["repo"], "huyker/game")
             self.assertEqual(registry.resolve("other")["default_branch"], "develop")
 
+    def test_registry_can_add_managed_project_from_github_repo(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "projects.json"
+            path.write_text(json.dumps({"schema_version":1,"projects":[]}))
+            registry = Registry(path)
+            entry = registry.add_project("git@github.com:acme/demo.git")
+            self.assertEqual(entry["id"], "demo")
+            self.assertEqual(entry["repo"], "acme/demo")
+            saved = json.loads(path.read_text())
+            self.assertEqual(saved["projects"][0]["issues_repo"], "acme/demo")
+
     def test_catalog_loads_agents_tasks(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
