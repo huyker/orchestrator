@@ -6,7 +6,8 @@
       "repo": "huyker/game",
       "default_branch": "main",
       "manifest_path": ".orchestrator/project.json",
-      "enabled": true
+      "enabled": true,
+      "issues_repo": "huyker/game"
     }
   ]
 }
