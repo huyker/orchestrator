@@ -122,6 +122,9 @@ class OrchestratorEngine:
         if not self._sync_lock.acquire(blocking=False):
             return list(self._last_sync_results)
         try:
+            # Reload the registry on every sync so adding/removing managed
+            # projects does not require restarting the all-in-one app.
+            self.registry = Registry(self.settings.registry_file)
             result: list[dict[str, Any]] = []
             for project in self.registry.list():
                 try:
