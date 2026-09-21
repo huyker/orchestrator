@@ -140,8 +140,9 @@ class AllInOneApplication:
             address = verify_dashboard(self.engine, probe_host, int(actual_port))
             print(f"Orchestrator dashboard verified: {address}")
             print(f"Auto sync interval: {self.sync_interval}s")
-            print("GitHub authentication will be auto-detected; otherwise connect it from the dashboard.")
-            print("Managed-project Issue worker starts automatically after GitHub auth + first successful project sync.")
+            print(f"Managed project root: {self.settings.workspace_root}")
+            print("Git uses local SSH credentials; Issue/PR API uses the existing gh CLI login.")
+            print("Managed-project Issue worker starts automatically after gh auth + first successful project sync.")
 
             if self.open_browser:
                 try:
