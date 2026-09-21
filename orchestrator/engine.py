@@ -411,6 +411,7 @@ class OrchestratorEngine:
 
     def _execute_active(self, lease: dict, issue: dict, task: dict, payload: dict) -> None:
         issue_number = lease["issue_number"]
+        issue_repo = self._issue_repo(issue_number)
         project = self.registry.resolve(task["project"])
         if task.get("target_repo") and task["target_repo"] != project["repo"]:
             raise ValueError("Issue target_repo does not match registry")
@@ -458,7 +459,7 @@ class OrchestratorEngine:
                 "Do not proceed to post-approval/detail/production work. Finish the current turn after the gate artifacts are ready.\n"
             )
 
-        prompt = f"""# Local executor task\n\nGitHub Issue: {self.settings.control_repo}#{issue_number}\nThe Issue task contract is authoritative. Repository plan/rule files are context only.\n\n## Task contract\n{json.dumps(task, ensure_ascii=False, indent=2)}\n\n## Project task profile\n{json.dumps(profile, ensure_ascii=False, indent=2)}\n\n## Project executor profile\n{json.dumps(executor, ensure_ascii=False, indent=2)}\n\n## Approved user gates\n{json.dumps(approved_gates, ensure_ascii=False, indent=2)}\n{gate_instruction}\n## Project context\n{project_context}\n\n## Graphify context (advisory project intelligence, never task authority)\n{graph_context or '[not available]'}\n\n## Latest Issue discussion\n{discussion}\n\nRules:\n- Implement only this Issue contract and current revision.\n- Do not commit, push, create or merge PRs; orchestrator owns Git lifecycle.\n- Never edit orchestrator/project control files unless this task is explicitly authorized as project-config.\n- If product/user input is required, emit exactly one final line:\n  @@ORCH_EVENT@@ {{\"type\":\"question\",\"question_id\":\"stable-id\",\"message\":\"...\",\"options\":[]}}\n- Otherwise complete the requested implementation and local checks.\n"""
+        prompt = f"""# Local executor task\n\nGitHub Issue: {issue_repo}#{issue_number}\nThe Issue task contract is authoritative. Repository plan/rule files are context only.\n\n## Task contract\n{json.dumps(task, ensure_ascii=False, indent=2)}\n\n## Project task profile\n{json.dumps(profile, ensure_ascii=False, indent=2)}\n\n## Project executor profile\n{json.dumps(executor, ensure_ascii=False, indent=2)}\n\n## Approved user gates\n{json.dumps(approved_gates, ensure_ascii=False, indent=2)}\n{gate_instruction}\n## Project context\n{project_context}\n\n## Graphify context (advisory project intelligence, never task authority)\n{graph_context or '[not available]'}\n\n## Latest Issue discussion\n{discussion}\n\nRules:\n- Implement only this Issue contract and current revision.\n- Do not commit, push, create or merge PRs; orchestrator owns Git lifecycle.\n- Never edit orchestrator/project control files unless this task is explicitly authorized as project-config.\n- If product/user input is required, emit exactly one final line:\n  @@ORCH_EVENT@@ {{\"type\":\"question\",\"question_id\":\"stable-id\",\"message\":\"...\",\"options\":[]}}\n- Otherwise complete the requested implementation and local checks.\n"""
         code, output = self.run_agent(executor, prompt, worktree, issue_number)
         question = self._question_from_output(output)
         if question:
@@ -491,7 +492,7 @@ class OrchestratorEngine:
                     task["target_repo"],
                     f"{task['task_id']}: {task['title']}",
                     (
-                        f"Implements {self.settings.control_repo}#{issue_number}.\n\n"
+                        f"Implements {issue_repo}#{issue_number}.\n\n"
                         f"Currently waiting for user gate `{pending_gate['id']}`. "
                         "The Issue remains the approval/source-of-truth thread."
                     ),
@@ -527,7 +528,7 @@ class OrchestratorEngine:
 
         diff = self.workspace.diff(worktree, task["base_branch"])
         reviewer_context = self.build_context(worktree, task, catalog, profile, reviewer)
-        reviewer_prompt = f"""# Independent reviewer\n\nGitHub Issue: {self.settings.control_repo}#{issue_number}\nYou did not implement this task. Review the Issue contract plus actual files/diff/tests.\n\n## Task\n{json.dumps(task, ensure_ascii=False, indent=2)}\n\n## Reviewer profile\n{json.dumps(reviewer, ensure_ascii=False, indent=2)}\n\n## Project context\n{reviewer_context}\n\n## Graphify context (advisory)\n{graph_context or '[not available]'}\n\n## Deterministic acceptance\n{json.dumps(first, ensure_ascii=False, indent=2)}\n\n## Actual diff\n{diff}\n\nInspect actual files/assets/tests directly. End output with exactly one line:\n@@ORCH_REVIEW@@ {{\"verdict\":\"PASS|FAIL\",\"score\":0,\"summary\":\"...\",\"findings\":[],\"acceptance\":[{{\"criterion\":\"exact acceptance string\",\"status\":\"PASS|FAIL\",\"evidence\":\"exact evidence\"}}],\"prohibited\":[{{\"rule\":\"exact prohibited string\",\"status\":\"PASS|FAIL\",\"evidence\":\"exact evidence\"}}],\"risks\":[]}}\nEvery acceptance/prohibited item must appear exactly and include evidence.\n"""
+        reviewer_prompt = f"""# Independent reviewer\n\nGitHub Issue: {issue_repo}#{issue_number}\nYou did not implement this task. Review the Issue contract plus actual files/diff/tests.\n\n## Task\n{json.dumps(task, ensure_ascii=False, indent=2)}\n\n## Reviewer profile\n{json.dumps(reviewer, ensure_ascii=False, indent=2)}\n\n## Project context\n{reviewer_context}\n\n## Graphify context (advisory)\n{graph_context or '[not available]'}\n\n## Deterministic acceptance\n{json.dumps(first, ensure_ascii=False, indent=2)}\n\n## Actual diff\n{diff}\n\nInspect actual files/assets/tests directly. End output with exactly one line:\n@@ORCH_REVIEW@@ {{\"verdict\":\"PASS|FAIL\",\"score\":0,\"summary\":\"...\",\"findings\":[],\"acceptance\":[{{\"criterion\":\"exact acceptance string\",\"status\":\"PASS|FAIL\",\"evidence\":\"exact evidence\"}}],\"prohibited\":[{{\"rule\":\"exact prohibited string\",\"status\":\"PASS|FAIL\",\"evidence\":\"exact evidence\"}}],\"risks\":[]}}\nEvery acceptance/prohibited item must appear exactly and include evidence.\n"""
         reviewer_code, reviewer_output = self.run_agent(reviewer, reviewer_prompt, worktree, issue_number)
         if reviewer_code:
             self._block(lease, "reviewer infrastructure failure", exit_code=reviewer_code, output=reviewer_output[-4000:])
@@ -548,7 +549,7 @@ class OrchestratorEngine:
             pr = self.github.create_pr(
                 task["target_repo"],
                 f"{task['task_id']}: {task['title']}",
-                f"Implements {self.settings.control_repo}#{issue_number}.\n\nTask/Q&A/status/review contract remains in the Issue.",
+                f"Implements {issue_repo}#{issue_number}.\n\nTask/Q&A/status/review contract remains in the Issue.",
                 branch,
                 task["base_branch"],
             )
