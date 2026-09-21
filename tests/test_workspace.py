@@ -21,6 +21,38 @@ class LocalWorkspace(WorkspaceManager):
 
 
 class WorkspaceTests(unittest.TestCase):
+    def test_local_source_is_read_in_place_and_task_uses_worktree(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            origin = root / "origin.git"
+            source = root / "game"
+            subprocess.run(["git", "init", "--bare", str(origin)], check=True, stdout=subprocess.DEVNULL)
+            subprocess.run(["git", "clone", str(origin), str(source)], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run(["git", "-C", str(source), "config", "user.email", "t@example.com"], check=True)
+            subprocess.run(["git", "-C", str(source), "config", "user.name", "Test"], check=True)
+            (source / "README.md").write_text("base")
+            subprocess.run(["git", "-C", str(source), "add", "."], check=True)
+            subprocess.run(["git", "-C", str(source), "commit", "-m", "base"], check=True, stdout=subprocess.DEVNULL)
+            subprocess.run(["git", "-C", str(source), "branch", "-M", "main"], check=True)
+            subprocess.run(["git", "-C", str(source), "push", "-u", "origin", "main"], check=True, stdout=subprocess.DEVNULL)
+            subprocess.run(["git", "--git-dir", str(origin), "symbolic-ref", "HEAD", "refs/heads/main"], check=True)
+
+            # Dirty local source must remain untouched by sync.
+            (source / "README.md").write_text("local edit")
+            settings = settings_for(root / "orch")
+            wm = LocalWorkspace(settings, origin)
+            synced = wm.sync_project("o/r", "main", str(source))
+            self.assertEqual(synced.resolve(), source.resolve())
+            self.assertEqual((source / "README.md").read_text(), "local edit")
+            info = wm.inspect_repo(source)
+            self.assertEqual(info["branch"], "main")
+            self.assertTrue(info["dirty"])
+
+            wt, branch = wm.prepare_task("o/r", "main", 11, "LOCAL", str(source))
+            self.assertNotEqual(wt.resolve(), source.resolve())
+            self.assertTrue((wt / ".git").exists())
+            self.assertTrue(branch.startswith("task/issue-11-"))
+
     def test_remote_task_branch_resumes_after_local_cache_loss(self):
         with tempfile.TemporaryDirectory() as td:
             root=Path(td); origin=root/"origin.git"; seed=root/"seed"
