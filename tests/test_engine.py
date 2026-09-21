@@ -21,6 +21,15 @@ def settings_for(td):
 
 
 class EngineTests(unittest.TestCase):
+    def test_lifecycle_stage_mapping(self):
+        ready = OrchestratorEngine._lifecycle("READY")
+        validating = OrchestratorEngine._lifecycle("VALIDATING")
+        review = OrchestratorEngine._lifecycle("WAITING_GPT_REVIEW")
+        self.assertEqual(ready["stage_index"], 0)
+        self.assertEqual(validating["stage_index"], 2)
+        self.assertEqual(review["stage_index"], 4)
+        self.assertEqual(review["progress_percent"], 85)
+
     def test_tick_is_hard_gated_until_dashboard_verified(self):
         with tempfile.TemporaryDirectory() as td:
             engine = OrchestratorEngine(settings_for(td))
