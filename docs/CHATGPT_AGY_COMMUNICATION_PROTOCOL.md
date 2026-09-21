@@ -67,6 +67,7 @@ Ví dụ:
 Rules:
 
 - `issue<ID>` là ID logic ổn định của task.
+- Task contract bắt buộc có `"issue_id": "issue<ID>"` và giá trị này phải khớp title.
 - Không đổi `issue<ID>` trong suốt vòng đời.
 - Có thể sửa phần title phía sau nếu cần làm rõ nội dung.
 - GitHub Issue number và logical issue ID là hai khái niệm khác nhau.
@@ -352,6 +353,8 @@ Canonical Issue body phải có đúng một block:
 {
   "schema_version": 1,
   "revision": 4,
+  "issue_id": "issue1",
+  "condition": [],
   "task_id": "GAME-0001",
   "project": "gamegit",
   "target_repo": "huyker/game",
@@ -380,6 +383,62 @@ Canonical Issue body phải có đúng một block:
   }
 }
 ```
+
+
+### 6.1. Dependency condition
+
+Mỗi task contract bắt buộc có:
+
+```json
+"issue_id": "issue3",
+"condition": ["issue1", "issue2"]
+```
+
+Ý nghĩa:
+
+- `issue_id` là logical Issue ID, phải khớp với title `[issue3]`.
+- `condition` là danh sách **logical Issue ID** cần hoàn thành trước.
+- `condition: []` nghĩa là task độc lập, có thể chạy ngay khi `orch:ready` và còn worker slot.
+- Không dùng GitHub Issue number trong `condition`.
+
+Dependency được xem là **SATISFIED** chỉ khi Issue được tham chiếu đã hoàn thành thành công:
+
+```text
+valid canonical Issue
++ terminal success / valid done_byORCH
++ orch:done
++ Issue closed as completed
++ required PR merged (nếu task có PR)
+= dependency satisfied
+```
+
+Các trạng thái sau **chưa đủ** để thỏa condition:
+
+```text
+orch:running
+orch:question
+orch:user-gate
+orch:gpt-review
+orch:approved
+orch:rework
+orch:blocked
+```
+
+Rules:
+
+1. Resolve dependency trong cùng `issues_repo` của managed project.
+2. Dependency phải tồn tại duy nhất và `issue_id` trong body phải khớp title.
+3. Self dependency bị reject.
+4. Cycle như `issue1 -> issue2 -> issue1` bị reject/fail closed.
+5. Dependency missing/ambiguous/invalid làm task không claimable và phải có diagnostic rõ ràng.
+6. Task chưa đủ condition ở state `WAITING_CONDITION`, lifecycle label `orch:waiting-condition`.
+7. Mỗi lần sync/reconciliation phải đánh giá lại dependencies.
+8. Khi dependency cuối cùng chuyển DONE, Orchestrator tự:
+   `WAITING_CONDITION -> READY`,
+   đổi label sang `orch:ready`,
+   và task trở thành queue candidate ngay, không cần user/GPT gửi retry.
+9. Các task `condition: []` có thể chạy song song nếu bounded worker capacity cho phép.
+10. Thay đổi `condition` hoặc `issue_id` là task contract mutation, bắt buộc tăng `revision`.
 
 ### Reviewer
 
@@ -416,6 +475,7 @@ Nếu reviewer có `GPT`, task không được DONE trước khi có GPT PASS bo
 Recommended labels:
 
 ```text
+orch:waiting-condition
 orch:ready
 orch:running
 orch:question
@@ -431,7 +491,8 @@ Mapping:
 
 | State | Label |
 |---|---|
-| Task mới | `orch:ready` |
+| Chờ dependency | `orch:waiting-condition` |
+| Task sẵn sàng | `orch:ready` |
 | AGY đang làm | `orch:running` |
 | Chờ trả lời | `orch:question` |
 | Chờ user approval | `orch:user-gate` |
@@ -473,8 +534,20 @@ Task executor chỉ claim:
 state = open
 label = orch:ready
 task contract valid
+all condition dependencies satisfied
 not already leased
+worker capacity available
 ```
+
+Nếu task contract hợp lệ nhưng `condition` chưa thỏa:
+
+```text
+state = WAITING_CONDITION
+label = orch:waiting-condition
+DO NOT CLAIM
+```
+
+Khi dependency cuối cùng DONE, reconciliation tự chuyển task sang `orch:ready`.
 
 Ordering recommended:
 
@@ -516,6 +589,8 @@ Cho mỗi open Issue đã biết:
    - current head SHA;
    - merge state.
 7. Reconcile local lease/worktree.
+8. Re-evaluate every task's `condition` graph.
+9. Move newly satisfied tasks from `orch:waiting-condition` to `orch:ready` automatically.
 
 ### 9.2. Cursor
 
@@ -642,7 +717,7 @@ WAITING_ANSWER → RUNNING
 
 Khi Orchestrator claim Issue:
 
-1. Lock global task lease.
+1. Verify the task's `condition` is fully satisfied and acquire an atomic per-task worker lease.
 2. Sync target repository.
 3. Load:
    - Issue contract;
@@ -915,7 +990,7 @@ Sau đó:
 ```text
 label → orch:done
 Issue → closed
-release global lease
+release task worker lease
 ```
 
 ---
@@ -972,8 +1047,16 @@ close Issue
                          │   NEW ISSUE   │
                          │ [issue1] ...  │
                          └───────┬───────┘
-                                 │ orch:ready
-                                 ▼
+                                 │
+                    condition satisfied?
+                         ┌───────┴────────┐
+                         │ NO             │ YES
+                         ▼                ▼
+                  WAIT_CONDITION      orch:ready
+                         │                │
+                   dependency DONE       │
+                         └────────────────┘
+                                          ▼
                          ┌───────────────┐
                          │    RUNNING    │
                          │ AGY executes  │
@@ -1163,6 +1246,10 @@ AGY phát triển communication subsystem phải có ít nhất:
 15. Dashboard visibility of communication state.
 16. Event audit log.
 17. Tests for stale/replayed/out-of-order events.
+18. Task `issue_id` validation against canonical title.
+19. Dependency graph parsing and cycle detection.
+20. WAITING_CONDITION lifecycle and automatic READY transition.
+21. Bounded parallel scheduling for independent `condition: []` tasks.
 
 ---
 
@@ -1186,7 +1273,15 @@ Minimum automated tests:
 - restart recovers open task;
 - closed Issue is not executed;
 - merged PR reconciles to DONE;
-- /review discovery returns every open `orch:gpt-review` Issue assigned to GPT.
+- /review discovery returns every open `orch:gpt-review` Issue assigned to GPT;
+- title `[issue7]` must match task contract `issue_id: issue7`;
+- missing dependency prevents claim;
+- dependency on non-DONE Issue prevents claim;
+- dependency becomes DONE and dependent task automatically becomes READY;
+- `condition: []` task is immediately eligible;
+- self dependency is rejected;
+- dependency cycle is rejected;
+- independent ready tasks may execute in parallel up to configured worker capacity.
 
 ---
 
