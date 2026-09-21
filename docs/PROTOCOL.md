@@ -1,10 +1,10 @@
 # GitHub Issue Protocol v1
 
-GitHub Issue is the task/message source of truth. Project repositories store plans/rules/agent profiles/source code, but **not active task transport/state files**.
+GitHub Issue is the task/message source of truth. Each managed project owns its Issue queue via `projects.json -> issues_repo`; project repositories store plans/rules/agent profiles/source code, but **not active task transport/state files in source branches**.
 
 ## Task contract
 
-Create/open one Issue in the orchestrator control repository with lifecycle label `orch:ready` and exactly one block:
+Create/open one Issue in the selected project's configured `issues_repo` (defaults to the project repo) with lifecycle label `orch:ready` and exactly one block:
 
 ```orchestrator-task
 {
