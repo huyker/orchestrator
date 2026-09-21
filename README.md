@@ -93,7 +93,7 @@ uv tool install graphifyy
 Register Graphify for Google Antigravity:
 
 ```bash
-graphify install --platform antigravity
+graphify antigravity install
 ```
 
 Check:
@@ -350,7 +350,7 @@ issue-orchestrator sync
 
 ```bash
 uv tool install graphifyy
-graphify install --platform antigravity
+graphify antigravity install
 ```
 
 Then:
