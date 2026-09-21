@@ -34,10 +34,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
         raw = self.rfile.read(length)
         return json.loads(raw.decode("utf-8"))
 
-    def _html(self, path: Path) -> None:
+    def _static(self, path: Path, content_type: str) -> None:
         raw = path.read_bytes()
         self.send_response(HTTPStatus.OK)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Type", content_type)
         self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Length", str(len(raw)))
         self.end_headers()
@@ -46,7 +46,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         route = urlparse(self.path).path
         if route == "/":
-            self._html(self.static_dir / "index.html")
+            self._static(self.static_dir / "index.html", "text/html; charset=utf-8")
+            return
+        if route == "/web/style.css":
+            self._static(self.static_dir / "style.css", "text/css; charset=utf-8")
+            return
+        if route == "/web/app.js":
+            self._static(self.static_dir / "app.js", "application/javascript; charset=utf-8")
             return
         if route == "/api/health":
             self._json({"ok": True})
@@ -66,6 +72,16 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 payload = self._read_json()
                 status = self.engine.connect_github_token(str(payload.get("token") or ""))
                 self._json({"ok": True, "github_auth": status})
+                return
+            if route == "/api/projects/add":
+                payload = self._read_json()
+                entry = self.engine.add_managed_project(
+                    str(payload.get("source") or ""),
+                    project_id=(str(payload.get("project_id") or "").strip() or None),
+                    issues_repo=(str(payload.get("issues_repo") or "").strip() or None),
+                    default_branch=(str(payload.get("default_branch") or "main").strip() or "main"),
+                )
+                self._json({"ok": True, "project": entry})
                 return
             if route == "/api/control/pause":
                 self.engine.pause()
