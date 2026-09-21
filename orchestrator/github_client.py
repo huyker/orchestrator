@@ -11,13 +11,31 @@ from .models import ALL_LABELS, LABEL_READY
 
 class GitHubClient:
     def __init__(self, token: str):
-        self.token = token
+        self.token = token.strip()
+
+    def set_token(self, token: str) -> None:
+        self.token = token.strip()
+
+    def auth_status(self) -> dict[str, Any]:
+        if not self.token:
+            return {"connected": False, "login": None, "error": "GitHub credential not configured"}
+        try:
+            user = self.request("GET", "/user")
+            return {
+                "connected": True,
+                "login": user.get("login"),
+                "name": user.get("name"),
+                "error": None,
+            }
+        except Exception as exc:
+            return {"connected": False, "login": None, "error": str(exc)}
 
     def request(self, method: str, path: str, data: Any | None = None) -> Any:
         url = "https://api.github.com" + path
         body = None if data is None else json.dumps(data).encode("utf-8")
         req = urllib.request.Request(url, data=body, method=method)
-        req.add_header("Authorization", f"Bearer {self.token}")
+        if self.token:
+            req.add_header("Authorization", f"Bearer {self.token}")
         req.add_header("Accept", "application/vnd.github+json")
         req.add_header("X-GitHub-Api-Version", "2022-11-28")
         if body is not None:
