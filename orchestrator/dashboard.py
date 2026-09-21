@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import threading
+import urllib.request
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -97,16 +98,43 @@ def make_server(engine: OrchestratorEngine, host: str, port: int) -> ThreadingHT
     return ThreadingHTTPServer((host, port), Handler)
 
 
+def verify_dashboard(engine: OrchestratorEngine, host: str, port: int) -> str:
+    url_host = f"[{host}]" if ":" in host and not host.startswith("[") else host
+    address = f"http://{url_host}:{port}"
+    for route in ("/api/health", "/api/status"):
+        with urllib.request.urlopen(address + route, timeout=3) as response:
+            if response.status != 200:
+                raise RuntimeError(f"Dashboard smoke check failed: {route} -> HTTP {response.status}")
+            payload = json.loads(response.read())
+            if route == "/api/health" and payload.get("ok") is not True:
+                raise RuntimeError("Dashboard health endpoint did not return ok=true")
+    engine.state.mark_dashboard_verified(address)
+    engine.state.add_event("dashboard_verified", {"address": address})
+    return address
+
+
 def serve_dashboard(engine: OrchestratorEngine, host: str, port: int, *, with_engine_loop: bool) -> None:
     if host not in ("127.0.0.1", "localhost", "::1"):
         raise ValueError("Dashboard is local-only; bind to 127.0.0.1/localhost/::1")
     stop = threading.Event()
-    if with_engine_loop:
-        threading.Thread(target=engine.serve_loop, args=(stop,), daemon=True).start()
     server = make_server(engine, host, port)
+    server_thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.5}, daemon=True)
+    server_thread.start()
     try:
-        print(f"Orchestrator dashboard: http://{host}:{port}")
-        server.serve_forever(poll_interval=0.5)
+        actual_host, actual_port = server.server_address[:2]
+        probe_host = host if port != 0 else actual_host
+        address = verify_dashboard(engine, probe_host, int(actual_port))
+        print(f"Orchestrator dashboard verified: {address}")
+        if with_engine_loop:
+            # Only after dashboard bind + /api/health + /api/status succeed may
+            # the worker create labels, poll Issues or claim tasks.
+            engine.ensure_labels()
+            threading.Thread(target=engine.serve_loop, args=(stop,), daemon=True).start()
+        while server_thread.is_alive():
+            server_thread.join(timeout=1)
+    except KeyboardInterrupt:
+        pass
     finally:
         stop.set()
+        server.shutdown()
         server.server_close()
