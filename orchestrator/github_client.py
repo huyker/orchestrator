@@ -1,24 +1,30 @@
 from __future__ import annotations
 
 import json
-import urllib.error
+import shutil
+import subprocess
 import urllib.parse
-import urllib.request
 from typing import Any
 
 from .models import ALL_LABELS, LABEL_READY
 
 
 class GitHubClient:
-    def __init__(self, token: str):
-        self.token = token.strip()
+    """GitHub API client backed by the already-authenticated local gh CLI."""
 
-    def set_token(self, token: str) -> None:
-        self.token = token.strip()
+    def __init__(self, token: str = ""):
+        # token is retained only for constructor compatibility with older callers.
+        # Orchestrator never reads, writes or persists GitHub tokens.
+        self.token = ""
 
     def auth_status(self) -> dict[str, Any]:
-        if not self.token:
-            return {"connected": False, "login": None, "error": "GitHub credential not configured"}
+        if not shutil.which("gh"):
+            return {
+                "connected": False,
+                "login": None,
+                "error": "GitHub CLI (gh) is not installed",
+                "provider": "gh-cli",
+            }
         try:
             user = self.request("GET", "/user")
             return {
@@ -26,27 +32,39 @@ class GitHubClient:
                 "login": user.get("login"),
                 "name": user.get("name"),
                 "error": None,
+                "provider": "gh-cli",
             }
         except Exception as exc:
-            return {"connected": False, "login": None, "error": str(exc)}
+            return {
+                "connected": False,
+                "login": None,
+                "error": f"GitHub CLI is not authenticated: {exc}",
+                "provider": "gh-cli",
+            }
 
     def request(self, method: str, path: str, data: Any | None = None) -> Any:
-        url = "https://api.github.com" + path
-        body = None if data is None else json.dumps(data).encode("utf-8")
-        req = urllib.request.Request(url, data=body, method=method)
-        if self.token:
-            req.add_header("Authorization", f"Bearer {self.token}")
-        req.add_header("Accept", "application/vnd.github+json")
-        req.add_header("X-GitHub-Api-Version", "2022-11-28")
-        if body is not None:
-            req.add_header("Content-Type", "application/json")
-        try:
-            with urllib.request.urlopen(req, timeout=30) as response:
-                raw = response.read()
-                return json.loads(raw) if raw else None
-        except urllib.error.HTTPError as exc:
-            detail = exc.read().decode(errors="replace")
-            raise RuntimeError(f"GitHub {method} {path}: HTTP {exc.code}: {detail}") from exc
+        if not shutil.which("gh"):
+            raise RuntimeError("GitHub CLI (gh) is required for Issue/PR operations")
+
+        endpoint = path.lstrip("/")
+        args = ["gh", "api", endpoint, "-X", method]
+        input_text = None
+        if data is not None:
+            args.extend(["--input", "-"])
+            input_text = json.dumps(data, ensure_ascii=False)
+
+        proc = subprocess.run(
+            args,
+            input=input_text,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            timeout=60,
+        )
+        if proc.returncode:
+            raise RuntimeError(f"gh api {method} {path}: {proc.stdout.strip()}")
+        raw = proc.stdout.strip()
+        return json.loads(raw) if raw else None
 
     def paged(self, path: str, per_page: int = 100) -> list[dict]:
         sep = "&" if "?" in path else "?"
@@ -92,7 +110,7 @@ class GitHubClient:
             self.request("GET", f"/repos/{repo}/labels/{encoded}")
             return
         except RuntimeError as exc:
-            if "HTTP 404" not in str(exc):
+            if "404" not in str(exc):
                 raise
         self.request("POST", f"/repos/{repo}/labels", {
             "name": name,
