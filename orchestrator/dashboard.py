@@ -27,6 +27,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(raw)
 
+    def _read_json(self) -> dict:
+        length = int(self.headers.get("Content-Length", "0") or 0)
+        if length <= 0:
+            return {}
+        raw = self.rfile.read(length)
+        return json.loads(raw.decode("utf-8"))
+
     def _html(self, path: Path) -> None:
         raw = path.read_bytes()
         self.send_response(HTTPStatus.OK)
@@ -55,6 +62,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._json({"ok": False, "error": "missing local dashboard control header"}, 403)
             return
         try:
+            if route == "/api/setup/github-token":
+                payload = self._read_json()
+                status = self.engine.connect_github_token(str(payload.get("token") or ""))
+                self._json({"ok": True, "github_auth": status})
+                return
             if route == "/api/control/pause":
                 self.engine.pause()
                 self._json({"ok": True})
