@@ -32,7 +32,7 @@ from .models import (
     iter_commands,
     parse_task,
 )
-from .project import Registry, inspect_project_source, load_catalog, resolve_profiles, safe_path
+from .project import Registry, default_project_id, github_repo_from_source, load_catalog, resolve_profiles, safe_path
 from .state import StateStore
 from .workspace import WorkspaceManager
 
@@ -82,65 +82,63 @@ class OrchestratorEngine:
     def self_update_status(self) -> dict[str, Any]:
         return dict(self._self_update_status)
 
-    def inspect_managed_project_source(self, source: str) -> dict[str, Any]:
-        return inspect_project_source(source)
-
-    def add_managed_project(
-        self,
-        source: str,
-        *,
-        project_id: str | None = None,
-        issues_repo: str | None = None,
-        default_branch: str = "main",
-    ) -> dict[str, Any]:
+    def add_managed_project(self, source: str) -> dict[str, Any]:
+        repo, _ = github_repo_from_source(source)
         self.registry = Registry(self.settings.registry_file)
+
+        existing = next(
+            (item for item in self.registry.list() if item["repo"] == repo),
+            None,
+        )
+        if existing:
+            root = self.workspace.sync_project(
+                repo,
+                existing.get("default_branch"),
+            )
+            info = self.workspace.inspect_repo(root)
+            return {
+                **existing,
+                "managed_path": str(root),
+                "repo_info": info,
+                "already_registered": True,
+            }
+
+        root = self.workspace.sync_project(repo, None)
+        info = self.workspace.inspect_repo(root)
+        branch = str(info.get("branch") or "")
+        if not branch or branch == "(detached)":
+            branch = self.workspace.remote_default_branch(root)
+
+        manifest_path = ".orchestrator/project.json"
+        manifest_file = root / manifest_path
+        project_id = default_project_id(repo)
+        if manifest_file.is_file():
+            manifest = json.loads(manifest_file.read_text(encoding="utf-8"))
+            manifest_repo = str(manifest.get("repository") or "").strip()
+            if manifest_repo and manifest_repo != repo:
+                raise ValueError(
+                    f"Project manifest repository {manifest_repo} does not match {repo}"
+                )
+            project_id = str(manifest.get("project") or project_id).strip()
+
         entry = self.registry.add_project(
-            source,
+            repo,
             project_id=project_id,
-            issues_repo=issues_repo,
-            default_branch=default_branch,
+            issues_repo=repo,
+            default_branch=branch,
+            manifest_path=manifest_path,
         )
         self.state.add_event("project_registered", {
             "project": entry["id"],
             "repo": entry["repo"],
-            "source_path": entry.get("source_path"),
+            "managed_path": str(root),
         })
-        # The normal background sync loop will pick it up automatically.
-        return entry
-
-    def connect_github_token(self, token: str, env_path: Path = Path(".env")) -> dict[str, Any]:
-        token = token.strip()
-        if not token:
-            raise ValueError("GitHub token is empty")
-        previous = self.github.token
-        self.github.set_token(token)
-        status = self.github.auth_status()
-        if not status.get("connected"):
-            self.github.set_token(previous)
-            raise RuntimeError(status.get("error") or "GitHub authentication failed")
-
-        lines: list[str] = []
-        if env_path.is_file():
-            lines = env_path.read_text(encoding="utf-8").splitlines()
-        replaced = False
-        output: list[str] = []
-        for line in lines:
-            if line.strip().startswith("GITHUB_TOKEN="):
-                output.append(f"GITHUB_TOKEN={token}")
-                replaced = True
-            else:
-                output.append(line)
-        if not replaced:
-            output.insert(0, f"GITHUB_TOKEN={token}")
-        env_path.write_text("\n".join(output).rstrip() + "\n", encoding="utf-8")
-        try:
-            env_path.chmod(0o600)
-        except OSError:
-            pass
-        os.environ["GITHUB_TOKEN"] = token
-        self._github_auth = status
-        self.state.add_event("github_connected", {"login": status.get("login")})
-        return dict(status)
+        return {
+            **entry,
+            "managed_path": str(root),
+            "repo_info": info,
+            "already_registered": False,
+        }
 
 
     @staticmethod
@@ -283,8 +281,7 @@ class OrchestratorEngine:
                 try:
                     root = self.workspace.sync_project(
                         project["repo"],
-                        project.get("default_branch", "main"),
-                        project.get("source_path"),
+                        project.get("default_branch"),
                     )
                     repo_info = self.workspace.inspect_repo(root)
                     head = str(repo_info["head"])
@@ -309,7 +306,8 @@ class OrchestratorEngine:
                         "ok": True,
                         "head": head,
                         "changed": project_changed,
-                        "source": "local" if project.get("source_path") else "managed-clone",
+                        "source": "managed-root",
+                        "managed_path": str(root),
                         "repo_info": repo_info,
                         "agents": sorted(catalog["agents"]),
                         "task_profiles": sorted(catalog["tasks"]),
@@ -328,12 +326,12 @@ class OrchestratorEngine:
     def project_snapshot(self) -> list[dict[str, Any]]:
         rows = []
         for project in self.registry.list():
-            root = self.workspace.repo_dir(project["repo"], project.get("source_path"))
+            root = self.workspace.repo_dir(project["repo"])
             row: dict[str, Any] = {
                 "id": project["id"],
                 "repo": project["repo"],
                 "issues_repo": project["issues_repo"],
-                "source_path": project.get("source_path"),
+                "managed_path": str(root),
                 "default_branch": project.get("default_branch", "main"),
                 "synced": root.exists(),
             }
@@ -343,7 +341,7 @@ class OrchestratorEngine:
                     repo_info = self.workspace.inspect_repo(root)
                     row.update({
                         "repo_info": repo_info,
-                        "source": "local" if project.get("source_path") else "managed-clone",
+                        "source": "managed-root",
                         "agents": sorted(catalog["agents"]),
                         "agent_profiles": catalog["agents"],
                         "task_profiles": sorted(catalog["tasks"]),
@@ -623,14 +621,12 @@ class OrchestratorEngine:
         project_root = self.workspace.sync_project(
             task["target_repo"],
             task["base_branch"],
-            project.get("source_path"),
         )
         worktree, branch = self.workspace.prepare_task(
             task["target_repo"],
             task["base_branch"],
             issue_number,
             task["task_id"],
-            project.get("source_path"),
         )
         catalog = load_catalog(worktree, project.get("manifest_path", ".orchestrator/project.json"))
         manifest = catalog["manifest"]
@@ -1132,6 +1128,11 @@ class OrchestratorEngine:
             "dashboard_bootstrap": dashboard_bootstrap,
             "github_auth": github_auth,
             "self_update": self.self_update_status(),
+            "system": {
+                "managed_root": str(self.settings.workspace_root),
+                "git_transport": self.settings.git_transport,
+                "github_api_auth": "gh-cli",
+            },
             "auto_sync": {
                 "last_sync_at": self._last_sync_at,
                 "last_results": self._last_sync_results,
@@ -1172,8 +1173,7 @@ class OrchestratorEngine:
         project = self.registry.resolve(project_id)
         root = self.workspace.sync_project(
             project["repo"],
-            project.get("default_branch", "main"),
-            project.get("source_path"),
+            project.get("default_branch"),
         )
         catalog = load_catalog(root, project.get("manifest_path", ".orchestrator/project.json"))
         status = self.graphify.ensure_graph(root, catalog["manifest"])
