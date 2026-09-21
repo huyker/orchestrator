@@ -1,14 +1,13 @@
 import json
 import os
 import tempfile
-import subprocess
 import time
 import unittest
 from unittest.mock import patch
 from pathlib import Path
 
 from orchestrator.models import Settings, canonical_task_hash, parse_task
-from orchestrator.project import Registry, inspect_project_source, load_catalog, safe_path
+from orchestrator.project import Registry, github_repo_from_source, load_catalog, safe_path
 from orchestrator.state import StateStore
 
 
@@ -28,10 +27,9 @@ class ModelsStateTests(unittest.TestCase):
                 ]
             }))
             with patch.dict(os.environ, {
-                "GITHUB_TOKEN": "token",
                 "ORCH_PROJECT_REGISTRY": str(registry),
                 "ORCH_RUNTIME_DIR": str(Path(td) / "runtime"),
-                "ORCH_WORKSPACE_ROOT": str(Path(td) / "repos"),
+                "ORCH_MANAGED_ROOT": str(Path(td) / "managed"),
             }, clear=True):
                 settings = Settings.from_env()
             self.assertEqual(settings.control_repo, "")
@@ -44,7 +42,7 @@ class ModelsStateTests(unittest.TestCase):
                 "schema_version": 1,
                 "projects": [{"id": "gamegit", "repo": "huyker/game", "issues_repo": "huyker/game"}]
             }))
-            with patch("orchestrator.models.discover_github_token", return_value=""), patch.dict(os.environ, {
+            with patch.dict(os.environ, {
                 "ORCH_PROJECT_REGISTRY": str(registry),
                 "ORCH_RUNTIME_DIR": str(Path(td) / "runtime"),
                 "ORCH_WORKSPACE_ROOT": str(Path(td) / "repos"),
@@ -87,33 +85,16 @@ class ModelsStateTests(unittest.TestCase):
             saved = json.loads(path.read_text())
             self.assertEqual(saved["projects"][0]["issues_repo"], "acme/demo")
 
-    def test_folder_path_auto_detects_git_repo_branch_and_manifest(self):
+    def test_local_folder_is_not_a_valid_project_input(self):
         with tempfile.TemporaryDirectory() as td:
-            root = Path(td) / "game"
-            root.mkdir()
-            subprocess.run(["git", "init"], cwd=root, check=True, stdout=subprocess.DEVNULL)
-            subprocess.run(["git", "config", "user.email", "t@example.com"], cwd=root, check=True)
-            subprocess.run(["git", "config", "user.name", "Test"], cwd=root, check=True)
-            subprocess.run(["git", "remote", "add", "origin", "git@github.com:acme/game.git"], cwd=root, check=True)
-            (root / "README.md").write_text("game")
-            subprocess.run(["git", "add", "."], cwd=root, check=True)
-            subprocess.run(["git", "commit", "-m", "base"], cwd=root, check=True, stdout=subprocess.DEVNULL)
-            subprocess.run(["git", "branch", "-M", "gameplay"], cwd=root, check=True)
-            (root / ".orchestrator").mkdir()
-            (root / ".orchestrator/project.json").write_text(json.dumps({
-                "schema_version": 3,
-                "project": "gamegit",
-                "repository": "acme/game"
-            }))
+            with self.assertRaises(ValueError):
+                github_repo_from_source(str(Path(td)))
 
-            info = inspect_project_source(str(root))
-            self.assertEqual(info["repo"], "acme/game")
-            self.assertEqual(info["project_id"], "gamegit")
-            self.assertEqual(info["issues_repo"], "acme/game")
-            self.assertEqual(info["branch"], "gameplay")
-            self.assertEqual(info["default_branch"], "gameplay")
-            self.assertTrue(info["manifest_exists"])
-            self.assertTrue(str(info["git_dir"]).endswith(".git"))
+    def test_github_url_is_normalized_to_owner_repo(self):
+        self.assertEqual(
+            github_repo_from_source("https://github.com/acme/game.git")[0],
+            "acme/game",
+        )
 
     def test_catalog_loads_agents_tasks(self):
         with tempfile.TemporaryDirectory() as td:
