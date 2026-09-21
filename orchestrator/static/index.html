@@ -12,7 +12,8 @@
     .muted { color:#8b949e; } .small { font-size:12px; }
     main { max-width:1500px; margin:0 auto; padding:20px; }
     .toolbar { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:18px; align-items:center; }
-    button,select { background:#21262d; border:1px solid #30363d; color:#e6edf3; padding:8px 12px; border-radius:7px; }
+    button,select,input { background:#21262d; border:1px solid #30363d; color:#e6edf3; padding:8px 12px; border-radius:7px; }
+    input { min-width:320px; }
     button { cursor:pointer; } button:hover { background:#30363d; }
     .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(340px,1fr)); gap:14px; }
     .card { background:#161b22; border:1px solid #30363d; border-radius:10px; padding:14px; min-width:0; }
@@ -43,6 +44,7 @@
   </div>
   <div id="toast" class="muted"></div>
   <div class="grid">
+    <section class="card wide"><h2>GitHub connection</h2><div id="githubAuth"></div></section>
     <section class="card"><h2>Active task</h2><div id="active"></div></section>
     <section class="card"><h2>Registered projects</h2><div id="projects"></div></section>
     <section class="card"><h2>Issue queue</h2><div id="issues"></div></section>
@@ -62,6 +64,35 @@ async function act(name) {
   const toast=document.getElementById('toast');
   try { const j=await api('/api/control/'+name,{method:'POST'}); toast.textContent=j.message||('Done: '+name); await refresh(); }
   catch(e){ toast.textContent='Error: '+e.message; }
+}
+async function connectGitHub(){
+  const input=document.getElementById('githubToken');
+  const token=(input?.value||'').trim();
+  const toast=document.getElementById('toast');
+  if(!token){toast.textContent='Enter a GitHub token first.'; return;}
+  try {
+    const j=await api('/api/setup/github-token',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({token})
+    });
+    input.value='';
+    toast.textContent='GitHub connected as '+(j.github_auth?.login||'authenticated user');
+    await refresh();
+  } catch(e){toast.textContent='GitHub connection error: '+e.message;}
+}
+function renderGithubAuth(auth){
+  const host=document.getElementById('githubAuth');
+  if(auth?.connected){
+    host.innerHTML=`<span class="ok"><b>Connected</b></span> as <b>${esc(auth.login||'GitHub user')}</b>
+      <span class="muted">· credentials are stored locally and are never shown in the dashboard.</span>`;
+    return;
+  }
+  host.innerHTML=`<div class="warn"><b>Not connected.</b> Issue processing is disabled, but dashboard/project sync remains available.</div>
+    <div style="margin-top:10px"><input id="githubToken" type="password" autocomplete="off" placeholder="GitHub token (repo/issues/pull request access)">
+    <button onclick="connectGitHub()">Connect GitHub</button></div>
+    <div class="muted small" style="margin-top:8px">The app also auto-detects GITHUB_TOKEN, GH_TOKEN, or an existing <code>gh auth</code> login.</div>
+    ${auth?.error?`<div class="muted small" style="margin-top:6px">${esc(auth.error)}</div>`:''}`;
 }
 function renderActive(a){
   if(!a) return '<span class="muted">No active task</span>';
@@ -114,6 +145,7 @@ async function refresh(){
   try {
     const s=await api('/api/status'); lastStatus=s;
     document.getElementById('runtime').textContent=s.paused?'PAUSED':'RUNNING';
+    renderGithubAuth(s.github_auth||{});
     const sync=s.auto_sync||{};
     document.getElementById('syncState').textContent=sync.last_sync_at ? 'auto sync: '+new Date(sync.last_sync_at*1000).toLocaleTimeString() : 'auto sync: waiting';
     document.getElementById('active').innerHTML=renderActive(s.active);
