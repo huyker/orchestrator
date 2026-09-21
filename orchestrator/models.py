@@ -58,16 +58,38 @@ class Settings:
     def from_env(cls) -> "Settings":
         control_repo = os.getenv("ORCH_CONTROL_REPO", "").strip()
         token = os.getenv("GITHUB_TOKEN", "").strip()
-        if "/" not in control_repo:
-            raise ValueError("ORCH_CONTROL_REPO must be OWNER/REPO")
+        if control_repo and "/" not in control_repo:
+            raise ValueError("ORCH_CONTROL_REPO must be OWNER/REPO when provided")
         if not token:
             raise ValueError("GITHUB_TOKEN is required")
+
+        registry_file = Path(os.getenv("ORCH_PROJECT_REGISTRY", "projects.json")).resolve()
         runtime = Path(os.getenv("ORCH_RUNTIME_DIR", ".orchestrator-runtime")).resolve()
-        raw_authors = os.getenv("ORCH_ALLOWED_AUTHORS", control_repo.split("/", 1)[0])
+
+        raw_authors = os.getenv("ORCH_ALLOWED_AUTHORS", "").strip()
+        if not raw_authors:
+            owners: set[str] = set()
+            try:
+                registry = json.loads(registry_file.read_text(encoding="utf-8"))
+                for project in registry.get("projects", []):
+                    repo = str(project.get("issues_repo") or project.get("repo") or "")
+                    if "/" in repo:
+                        owners.add(repo.split("/", 1)[0].strip())
+            except (OSError, json.JSONDecodeError, TypeError):
+                pass
+            if control_repo and "/" in control_repo:
+                owners.add(control_repo.split("/", 1)[0].strip())
+            raw_authors = ",".join(sorted(x for x in owners if x))
+        if not raw_authors:
+            raise ValueError(
+                "ORCH_ALLOWED_AUTHORS could not be inferred from projects.json; "
+                "set ORCH_ALLOWED_AUTHORS explicitly"
+            )
+
         return cls(
             control_repo=control_repo,
             token=token,
-            registry_file=Path(os.getenv("ORCH_PROJECT_REGISTRY", "projects.json")).resolve(),
+            registry_file=registry_file,
             runtime_dir=runtime,
             workspace_root=Path(os.getenv("ORCH_WORKSPACE_ROOT", runtime / "repos")).resolve(),
             poll_interval=max(2, int(os.getenv("ORCH_POLL_INTERVAL", "5"))),
