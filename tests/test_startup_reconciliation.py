@@ -208,7 +208,72 @@ class TestStartupReconciliation(unittest.TestCase):
             self.assertEqual(lease["status"], "REWORK")
             engine._handle_active.assert_called_once()
 
+    def test_git_local_task_issues_and_sync_datetime(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            reg_path = root / "projects.json"
+            repo_dir = root / "workspace" / "owner" / "repo"
+            repo_dir.mkdir(parents=True)
+            import subprocess
+            subprocess.run(["git", "init"], cwd=repo_dir, check=True, capture_output=True)
+            subprocess.run(["git", "checkout", "-b", "main"], cwd=repo_dir, check=True, capture_output=True)
+            subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo_dir, check=True)
+            subprocess.run(["git", "config", "user.name", "tester"], cwd=repo_dir, check=True)
+            (repo_dir / "README.md").write_text("hello")
+            subprocess.run(["git", "add", "."], cwd=repo_dir, check=True)
+            subprocess.run(["git", "commit", "-m", "initial"], cwd=repo_dir, check=True, capture_output=True)
+            subprocess.run(["git", "checkout", "-b", "task/issue-42-smoke-test"], cwd=repo_dir, check=True, capture_output=True)
+            (repo_dir / "smoke.txt").write_text("smoke test")
+            subprocess.run(["git", "add", "."], cwd=repo_dir, check=True)
+            subprocess.run(["git", "commit", "-m", "task(SMOKE): issue #42"], cwd=repo_dir, check=True, capture_output=True)
+            subprocess.run(["git", "checkout", "main"], cwd=repo_dir, check=True, capture_output=True)
+
+            reg_path.write_text(json.dumps({
+                "schema_version": 1,
+                "projects": [
+                    {
+                        "id": "proj-1",
+                        "repo": "owner/repo",
+                        "issues_repo": "owner/repo",
+                        "enabled": True,
+                    }
+                ]
+            }), encoding="utf-8")
+
+            settings = Settings(
+                control_repo="",
+                token="",
+                registry_file=reg_path,
+                runtime_dir=root / "runtime",
+                workspace_root=root / "workspace",
+                poll_interval=5,
+                git_transport="https",
+                agy_bin="mock-agy",
+                agent_effort="low",
+                agent_timeout=30,
+                test_timeout=30,
+                lease_timeout=180,
+                dashboard_host="127.0.0.1",
+                dashboard_port=0,
+                allowed_authors=("test-user",),
+                max_workers=2,
+            )
+
+            engine = OrchestratorEngine(settings)
+            engine.state.mark_dashboard_verified("http://127.0.0.1:8766")
+            snap = engine.snapshot()
+            self.assertEqual(len(snap["issues"]), 1)
+            self.assertEqual(snap["issues"][0]["number"], 42)
+            self.assertEqual(snap["issues"][0]["title"], "task(SMOKE): issue #42")
+
+            engine.sync_projects()
+            self.assertIsNotNone(engine._last_sync_datetime)
+            self.assertIsNotNone(engine._last_sync_at)
+            snap2 = engine.snapshot()
+            self.assertEqual(snap2["auto_sync"]["last_sync_datetime"], engine._last_sync_datetime)
+
 
 if __name__ == "__main__":
     unittest.main()
+
 

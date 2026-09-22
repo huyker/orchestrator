@@ -78,6 +78,23 @@
       <button class="btn-close-banner" onclick="clearBlock()">&times;</button>
     </div>
 
+    <!-- GitHub Auth Banner (when not connected) -->
+    <div id="githubAuthBanner" class="blocker-banner hidden" style="border-left-color: #38bdf8; background: rgba(14, 165, 233, 0.12);">
+      <div class="blocker-icon">🔑</div>
+      <div class="blocker-content" style="flex: 1;">
+        <div class="blocker-title" style="color: #38bdf8;">Chưa Kết Nối GitHub API (Để đồng bộ danh sách Issue & PR)</div>
+        <div class="blocker-msg" style="margin-bottom: 8px; color: #e2e8f0;">
+          Orchestrator cần <b>GITHUB_TOKEN</b> (Personal Access Token có quyền <code>repo</code>) để tải toàn bộ Issue và quản lý task. Hãy nhập token dưới đây hoặc đặt <code>GITHUB_TOKEN=...</code> trong file <code>.env</code>.
+        </div>
+        <div style="display: flex; gap: 8px; align-items: center;">
+          <input type="password" id="inputGithubToken" placeholder="Dán GITHUB_TOKEN (ghp_...) tại đây" style="flex: 1; max-width: 420px; padding: 6px 12px; font-size: 13px; background: rgba(0,0,0,0.5); border: 1px solid rgba(255,255,255,0.2); border-radius: 6px; color: #fff;">
+          <button class="btn btn-sm btn-primary" onclick="saveGithubToken()">Lưu & Kết Nối</button>
+        </div>
+      </div>
+      <button class="btn-close-banner" onclick="document.getElementById('githubAuthBanner').classList.add('hidden')">&times;</button>
+    </div>
+
+
     <!-- MAIN VIEW CONTAINER -->
     <main class="views-wrapper">
       <!-- ================= TAB 1: DASHBOARD DỰ ÁN ================= -->

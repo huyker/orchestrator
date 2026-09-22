@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+
 import threading
 import urllib.request
 from http import HTTPStatus
@@ -174,6 +176,36 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 effective = self.engine.set_agent_model(agent_id, model)
                 self._json({"ok": True, "agent_id": agent_id, "effective_model": effective})
                 return
+            if route == "/api/auth/token":
+                payload = self._read_json()
+                token = str(payload.get("token") or "").strip()
+                if not token:
+                    raise ValueError("Token cannot be empty")
+                os.environ["GITHUB_TOKEN"] = token
+                self.engine.github.token = token
+                env_file = Path(".env")
+                lines = env_file.read_text(encoding="utf-8").splitlines() if env_file.is_file() else []
+                updated = False
+                new_lines = []
+                for line in lines:
+                    if line.strip().startswith("GITHUB_TOKEN=") or line.strip().startswith("GH_TOKEN="):
+                        new_lines.append(f"GITHUB_TOKEN={token}")
+                        updated = True
+                    else:
+                        new_lines.append(line)
+                if not updated:
+                    new_lines.append(f"GITHUB_TOKEN={token}")
+                env_file.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+
+                auth_result = self.engine.refresh_github_auth()
+                if auth_result.get("connected"):
+                    try:
+                        self.engine.reconcile_startup_state()
+                    except Exception:
+                        pass
+                self._json({"ok": True, "auth": auth_result})
+                return
+
             prefix = "/api/projects/"
             suffix_graphify = "/graphify/update"
             suffix_sync = "/sync"

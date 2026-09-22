@@ -41,10 +41,10 @@ http://127.0.0.1:8766
 
 Requirements:
 
-- Python 3.11+
+- Python 3.11+ (Python 3.8+ supported)
 - Git
 - SSH access to managed GitHub repositories
-- GitHub CLI (`gh`) already authenticated on the machine for Issue/PR API operations
+- GitHub API access for Issue/PR operations (either `GITHUB_TOKEN` or GitHub CLI `gh`)
 - local `agy` executable for Antigravity agent execution
 
 Clone and configure:
@@ -55,16 +55,35 @@ cd orchestrator
 cp .env.example .env
 ```
 
-No GitHub token is configured inside orchestrator.
+### GitHub Authentication & Permissions
 
-Git clone/fetch/pull/push use the machine's existing SSH credentials. GitHub Issue/PR operations use the existing `gh` CLI login. Verify it once outside orchestrator:
-
+Git clone/fetch/pull/push use the machine's existing SSH credentials:
 ```bash
 ssh -T git@github.com
-gh auth status
 ```
 
-Orchestrator never asks for, stores or writes a GitHub token.
+For GitHub Issue & PR sync, choose either of the following methods:
+
+**Method 1: Personal Access Token (Recommended & Quickest)**
+1. Go to [GitHub Settings → Developer Settings → Personal access tokens](https://github.com/settings/tokens).
+2. Generate a token (Classic) with the **`repo`** scope (Full control of private repositories).
+3. Add to your `.env` file:
+   ```env
+   GITHUB_TOKEN=ghp_your_personal_access_token_here
+   ```
+   *(Or paste it directly into the prompt banner on the Orchestrator dashboard at `http://127.0.0.1:8766`).*
+
+**Method 2: GitHub CLI (`gh`) with Device Code**
+1. Install `gh` if not already installed (e.g. `conda install -c conda-forge gh` or `sudo apt install gh`).
+2. Run interactive or device code authentication:
+   ```bash
+   gh auth login
+   ```
+   Select: **GitHub.com** → **HTTPS or SSH** → **Paste an authentication token** or **Login with a web browser (Device Code)**.
+3. Verify status:
+   ```bash
+   gh auth status
+   ```
 
 Then run:
 

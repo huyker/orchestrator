@@ -74,7 +74,15 @@ class OrchestratorEngine:
         self._models_refresh_started = False
         self._project_heads: dict[str, str] = {}
         self._last_sync_at: float | None = None
+        self._last_sync_datetime: str | None = None
+        try:
+            self._last_sync_datetime = self.state.get_config("last_sync_datetime")
+            stored_ts = self.state.get_config("last_sync_at")
+            self._last_sync_at = float(stored_ts) if stored_ts else None
+        except Exception:
+            pass
         self._last_sync_results: list[dict[str, Any]] = []
+
         self._github_auth: dict[str, Any] = {
             "connected": False,
             "login": None,
@@ -539,12 +547,24 @@ class OrchestratorEngine:
                     })
                 except Exception as exc:
                     result.append({"id": project["id"], "repo": project["repo"], "ok": False, "error": str(exc)})
-            self._last_sync_at = time.time()
+            now = time.time()
+            now_dt = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            self._last_sync_at = now
+            self._last_sync_datetime = now_dt
+            try:
+                self.state.set_config("last_sync_at", str(now))
+                self.state.set_config("last_sync_datetime", now_dt)
+            except Exception:
+                pass
+            for r in result:
+                r["last_sync_at"] = now
+                r["last_sync_datetime"] = now_dt
             self._last_sync_results = result
-            self.state.add_event("projects_synced", {"projects": result})
+            self.state.add_event("projects_synced", {"projects": result, "sync_datetime": now_dt})
             return result
         finally:
             self._sync_lock.release()
+
 
     def reconcile_startup_state(self) -> dict[str, Any]:
         """On startup, query Git and GitHub to synchronize all open issues, adopt existing leases,
@@ -722,6 +742,8 @@ class OrchestratorEngine:
                 "managed_path": str(root),
                 "default_branch": project.get("default_branch", "main"),
                 "synced": root.exists(),
+                "last_sync_at": self._last_sync_at,
+                "last_sync_datetime": getattr(self, "_last_sync_datetime", None),
                 "task_metrics": task_metrics,
                 "total_tasks": len(p_issues),
                 "ready_tasks": ready_count,
@@ -1727,6 +1749,103 @@ class OrchestratorEngine:
         finally:
             self._tick_lock.release()
 
+    def _git_local_task_issues(self) -> list[dict[str, Any]]:
+        """Extract task issues from local and remote Git branches and SQLite state leases
+        when GitHub API is offline or unauthenticated."""
+        issues: list[dict[str, Any]] = []
+        seen_numbers: set[int] = set()
+
+        # 1. Add any leases in SQLite state
+        for lease in self.state.get_active_leases():
+            num = int(lease["issue_number"])
+            seen_numbers.add(num)
+            p = dict(lease.get("payload") or {})
+            lc = self._lifecycle(lease["status"])
+            issues.append({
+                "issue_repo": p.get("issue_repo") or p.get("target_repo", ""),
+                "project_ids": [p.get("project", "")],
+                "number": num,
+                "title": f"Task #{num}: {p.get('task_id', 'Active Task')}",
+                "url": f"https://github.com/{p.get('target_repo', '')}/issues/{num}",
+                "labels": ["orch:running" if lease["status"] == "RUNNING" else "orch:rework"],
+                "task": {
+                    "task_id": p.get("task_id", f"task-{num}"),
+                    "project": p.get("project", ""),
+                    "type": "code",
+                    "revision": int(p.get("revision", 1)),
+                    "priority": 1,
+                    "issue_id": p.get("logical_issue_id"),
+                    "condition": [],
+                },
+                "task_error": None,
+                "lifecycle": lc,
+            })
+
+        # 2. Extract from Git branches in managed project repos
+        branch_pat = re.compile(r"task/issue-(?P<number>\d+)-(?P<slug>.+)$")
+        for project in self.registry.list():
+            root = self.workspace.repo_dir(project["repo"])
+            if not root.exists():
+                continue
+            proc = subprocess.run(
+                ["git", "branch", "-a"],
+                cwd=root,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+            )
+            if proc.returncode != 0:
+                continue
+            for line in proc.stdout.splitlines():
+                raw = line.strip().replace("*", "").strip()
+                if " -> " in raw:
+                    continue
+                clean_branch = raw.replace("remotes/origin/", "").replace("origin/", "")
+                m = branch_pat.match(clean_branch)
+                if not m:
+                    continue
+                num = int(m.group("number"))
+                if num in seen_numbers:
+                    continue
+                seen_numbers.add(num)
+                slug = m.group("slug")
+
+                subj_proc = subprocess.run(
+                    ["git", "log", "-1", "--format=%s", raw],
+                    cwd=root,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL,
+                )
+                subject = subj_proc.stdout.strip() or f"Task issue #{num} ({slug})"
+                lc = self._lifecycle("RUNNING", ["orch:running"])
+
+                issues.append({
+                    "issue_repo": project.get("issues_repo", project["repo"]),
+                    "project_ids": [project["id"]],
+                    "number": num,
+                    "title": subject,
+                    "url": f"https://github.com/{project['repo']}/issues/{num}",
+                    "labels": ["orch:running"],
+                    "task": {
+                        "task_id": slug,
+                        "project": project["id"],
+                        "type": "code",
+                        "revision": 1,
+                        "priority": 2,
+                        "issue_id": slug.upper(),
+                        "condition": [],
+                    },
+                    "task_error": None,
+                    "lifecycle": lc,
+                })
+
+        return sorted(issues, key=lambda x: x["number"])
+
     # ---------- dashboard operations ----------
     def snapshot(self) -> dict[str, Any]:
         dashboard_bootstrap = self.state.dashboard_verification()
@@ -1735,8 +1854,8 @@ class OrchestratorEngine:
             queue = []
             queue_error = "dashboard bootstrap not verified; managed-project Issue queue is disabled"
         elif not github_auth.get("connected"):
-            queue = []
-            queue_error = "GitHub not connected; managed-project Issue queue is disabled"
+            queue = self._git_local_task_issues()
+            queue_error = "GitHub API chưa kết nối (thiếu GITHUB_TOKEN). Đang tải task từ Git branches và local state."
         else:
             try:
                 queue = []
@@ -1745,8 +1864,6 @@ class OrchestratorEngine:
                     sources.setdefault(project["issues_repo"], []).append(project["id"])
                 for issue_repo, project_ids in sorted(sources.items()):
                     for row in self.github.list_open_orchestrator_issues(issue_repo):
-                        if not any(label.get("name", "").startswith("orch:") for label in row.get("labels", [])):
-                            continue
                         task_summary = None
                         task_error = None
                         try:
@@ -1762,7 +1879,7 @@ class OrchestratorEngine:
                             }
                         except Exception as exc:
                             task_error = str(exc)
-                        labels = [label["name"] for label in row.get("labels", [])]
+                        labels = [label["name"] for label in row.get("labels", []) if isinstance(label, dict) and "name" in label] or [str(l) for l in row.get("labels", [])]
                         active_lease = self.state.get_lease(int(row["number"]))
                         active_status = ""
                         active_payload = {}
@@ -1790,7 +1907,8 @@ class OrchestratorEngine:
                         })
                 queue_error = None
             except Exception as exc:
-                queue, queue_error = [], str(exc)
+                queue, queue_error = self._git_local_task_issues(), str(exc)
+
 
         active_leases = self.state.get_active_leases()
         active_tasks = []
@@ -1839,6 +1957,7 @@ class OrchestratorEngine:
             },
             "auto_sync": {
                 "last_sync_at": self._last_sync_at,
+                "last_sync_datetime": getattr(self, "_last_sync_datetime", None),
                 "last_results": self._last_sync_results,
             },
             "worker_capacity": {

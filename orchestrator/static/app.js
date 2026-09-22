@@ -25,14 +25,45 @@ async function api(path, opts = {}) {
   return data;
 }
 
-function fmtTime(ts) {
+function fmtDateTime(ts, dtStr) {
+  if (dtStr) return dtStr;
   if (!ts) return 'Chưa có';
   try {
-    return new Date(ts * 1000).toLocaleTimeString();
+    const d = new Date(ts * 1000);
+    return d.toLocaleString('vi-VN');
   } catch {
     return String(ts);
   }
 }
+
+function fmtTime(ts) {
+  return fmtDateTime(ts);
+}
+
+async function saveGithubToken() {
+  const input = document.getElementById('inputGithubToken');
+  const token = (input?.value || '').trim();
+  if (!token) {
+    alert('Vui lòng nhập GitHub Token (ghp_...)');
+    return;
+  }
+  try {
+    const res = await api('/api/auth/token', {
+      method: 'POST',
+      body: JSON.stringify({ token }),
+    });
+    if (res.ok && res.auth?.connected) {
+      document.getElementById('githubAuthBanner')?.classList.add('hidden');
+      alert(`Đã kết nối GitHub thành công! Tài khoản: ${res.auth.login}`);
+      await refresh();
+    } else {
+      alert(`Kết nối thất bại: ${res.auth?.error || 'Token không hợp lệ'}`);
+    }
+  } catch (err) {
+    alert(`Lỗi kết nối GitHub: ${err.message}`);
+  }
+}
+
 
 // Global Banner
 function showBlock(msg) {
@@ -285,7 +316,9 @@ function renderProjectsGrid(projects) {
         <div class="project-card-meta font-mono">
           <span class="meta-chip">🌿 Branch: <b>${esc(branch)}</b></span>
           <span class="meta-chip">📁 Tree: <b>${isDirty ? '<span class="highlight-amber">DIRTY</span>' : '<span class="highlight-emerald">CLEAN</span>'}</b></span>
+          <span class="meta-chip">🕒 Đồng bộ: <b>${fmtDateTime(p.last_sync_at, p.last_sync_datetime)}</b></span>
         </div>
+
 
         <!-- Task Metrics Row -->
         <div class="project-task-summary">
@@ -754,8 +787,9 @@ function renderTelemetry(status) {
   document.getElementById('liveTaskVal').textContent = p.task_id || 'None';
   document.getElementById('liveBranchVal').textContent = p.branch || 'None';
   document.getElementById('livePrVal').textContent = p.pr_number ? `#${p.pr_number}` : 'None';
-  document.getElementById('liveSyncVal').textContent = fmtTime(status.auto_sync?.last_sync_at);
+  document.getElementById('liveSyncVal').textContent = fmtDateTime(status.auto_sync?.last_sync_at, status.auto_sync?.last_sync_datetime);
 }
+
 
 function renderTerminalEvents(events) {
   if (localEventsCleared) return;
@@ -796,14 +830,18 @@ async function refresh() {
 
     const ghBadge = document.getElementById('githubBadge');
     const auth = s.github_auth || {};
+    const ghBanner = document.getElementById('githubAuthBanner');
     if (auth.connected) {
       ghBadge.className = 'status-pill';
       ghBadge.innerHTML = `<span class="status-dot"></span> GitHub: ${esc(auth.login || 'Đã kết nối')}`;
+      if (ghBanner) ghBanner.classList.add('hidden');
     } else {
       ghBadge.className = 'status-pill offline';
       ghBadge.innerHTML = '<span class="status-dot"></span> GitHub: Ngoại tuyến';
-      ghBadge.title = auth.error || 'Cần chạy gh auth login';
+      ghBadge.title = auth.error || 'Cần cấu hình GITHUB_TOKEN hoặc chạy gh auth login';
+      if (ghBanner) ghBanner.classList.remove('hidden');
     }
+
 
     document.getElementById('dashManagedRoot').textContent = `Thư mục quản lý: ${s.system?.managed_root || 'Chưa cấu hình'}`;
 
