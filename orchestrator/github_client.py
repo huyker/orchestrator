@@ -187,6 +187,10 @@ class GitHubClient:
         rows = self.paged(f"/repos/{repo}/issues?state=open")
         return [row for row in rows if "pull_request" not in row]
 
+    def list_all_orchestrator_issues(self, repo: str) -> list[dict]:
+        rows = self.paged(f"/repos/{repo}/issues?state=all")
+        return [row for row in rows if "pull_request" not in row]
+
     def get_issue(self, repo: str, number: int) -> dict:
         return self.request("GET", f"/repos/{repo}/issues/{number}")
 
@@ -239,6 +243,12 @@ class GitHubClient:
 
     def get_pr(self, repo: str, number: int) -> dict:
         return self.request("GET", f"/repos/{repo}/pulls/{number}")
+
+    def merge_pr(self, repo: str, number: int, commit_title: str = "", merge_method: str = "merge") -> dict:
+        data: dict[str, Any] = {"merge_method": merge_method}
+        if commit_title:
+            data["commit_title"] = commit_title
+        return self.request("PUT", f"/repos/{repo}/pulls/{number}/merge", data)
 
     def post_command(self, repo: str, issue: int, payload: dict[str, Any]) -> dict:
         block = "```orchestrator-command\n" + json.dumps(payload, ensure_ascii=False) + "\n```"

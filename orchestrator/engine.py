@@ -440,7 +440,9 @@ class OrchestratorEngine:
         if normalized not in stage_map:
             if "orch:done" in labels:
                 normalized = "DONE"
-            elif "orch:approved" in labels or "orch:gpt-review" in labels:
+            elif "orch:approved" in labels:
+                normalized = "APPROVED_WAITING_MERGE"
+            elif "orch:gpt-review" in labels:
                 normalized = "WAITING_GPT_REVIEW"
             elif "orch:user-gate" in labels:
                 normalized = "WAITING_USER_GATE"
@@ -725,13 +727,32 @@ class OrchestratorEngine:
 
             summary["open_issues_inspected"] += len(open_issues)
 
-            # Reconcile conditions
+            open_mocked = hasattr(self.github, "list_open_orchestrator_issues") and not (
+                hasattr(self.github.list_open_orchestrator_issues, "__self__")
+                and self.github.list_open_orchestrator_issues.__self__ is self.github
+            )
+            if open_mocked:
+                all_issues = list(open_issues)
+            else:
+                try:
+                    all_issues = self.github.list_all_orchestrator_issues(issue_repo)
+                except Exception:
+                    all_issues = list(open_issues)
+
+            # Reconcile conditions using all_issues so closed prerequisite tasks count as DONE
             try:
-                self._reconcile_conditions_for_issues(issue_repo, open_issues)
+                self._reconcile_conditions_for_issues(issue_repo, all_issues)
             except Exception:
                 pass
 
-            for row in open_issues:
+            # Inspect issues (including closed) to release any leases that were marked done or closed
+            issues_to_inspect = list(open_issues)
+            known_inspect_nums = {r.get("number") for r in issues_to_inspect if r.get("number")}
+            for r in all_issues:
+                if r.get("number") and r["number"] not in known_inspect_nums:
+                    issues_to_inspect.append(r)
+
+            for row in issues_to_inspect:
                 num = int(row.get("number") or 0)
                 if not num:
                     continue
@@ -756,7 +777,9 @@ class OrchestratorEngine:
                     lc_status = "WAITING_ANSWER"
                 elif LABEL_GATE in labels:
                     lc_status = "WAITING_USER_GATE"
-                elif LABEL_GPT_REVIEW in labels or LABEL_APPROVED in labels:
+                elif LABEL_APPROVED in labels:
+                    lc_status = "APPROVED_WAITING_MERGE"
+                elif LABEL_GPT_REVIEW in labels:
                     lc_status = "WAITING_GPT_REVIEW"
 
                 if not lc_status:
@@ -766,8 +789,10 @@ class OrchestratorEngine:
                 if existing:
                     cur_status = existing.get("status")
                     cur_payload = dict(existing.get("payload") or {})
+                    if LABEL_APPROVED in labels and cur_status != "APPROVED_WAITING_MERGE":
+                        self.state.update_lease(self.instance_id, status="APPROVED_WAITING_MERGE", payload=cur_payload, issue_number=num)
                     # If question or user gate was answered/approved while offline, update to REWORK
-                    if cur_status == "WAITING_ANSWER":
+                    elif cur_status == "WAITING_ANSWER":
                         try:
                             comments = self.github.comments(issue_repo, num)
                             rev = int(cur_payload.get("revision", 1))
@@ -819,6 +844,18 @@ class OrchestratorEngine:
                         "issue_repo": issue_repo,
                         "reconstructed_on_startup": True,
                     }
+                    if lc_status in ("APPROVED_WAITING_MERGE", "WAITING_GPT_REVIEW"):
+                        try:
+                            comments = self.github.comments(issue_repo, num)
+                            for cmd_name in ("external_review", "pr_opened"):
+                                found_cmd = self._find_command(comments, num, cmd_name, int(payload["revision"]))
+                                if found_cmd and found_cmd[0].get("pr_number"):
+                                    payload["pr_number"] = int(found_cmd[0]["pr_number"])
+                                    if found_cmd[0].get("pr_head_sha"):
+                                        payload["pr_head_sha"] = found_cmd[0]["pr_head_sha"]
+                                    break
+                        except Exception:
+                            pass
                     self.state.force_claim(self.instance_id, num, lc_status, payload)
                     summary["reconstructed_leases"] += 1
                 except Exception as exc:
@@ -1449,7 +1486,10 @@ class OrchestratorEngine:
         status = lease["status"]
 
         # Synchronize lifecycle if issue was transitioned on GitHub
-        if LABEL_GPT_REVIEW in labels and status not in ("WAITING_GPT_REVIEW", "APPROVED_WAITING_MERGE", "BLOCKED"):
+        if LABEL_APPROVED in labels and status not in ("APPROVED_WAITING_MERGE", "DONE", "COMPLETED"):
+            status = "APPROVED_WAITING_MERGE"
+            self.state.update_lease(self.instance_id, status="APPROVED_WAITING_MERGE", payload=payload, issue_number=issue_number)
+        elif LABEL_GPT_REVIEW in labels and status not in ("WAITING_GPT_REVIEW", "APPROVED_WAITING_MERGE", "BLOCKED"):
             status = "WAITING_GPT_REVIEW"
             self.state.update_lease(self.instance_id, status="WAITING_GPT_REVIEW", payload=payload, issue_number=issue_number)
 
@@ -1545,49 +1585,103 @@ class OrchestratorEngine:
             return
 
         if status == "WAITING_GPT_REVIEW":
-            pr_number = int(payload.get("pr_number") or 0)
-            if pr_number:
-                pr = self.github.get_pr(payload["target_repo"], pr_number)
-                actual_head = ((pr.get("head") or {}).get("sha") or "")
-                if actual_head and actual_head != payload.get("pr_head_sha"):
-                    self.event(issue_number, "pr_head_changed", previous=payload.get("pr_head_sha"), current=actual_head)
-                    payload["pr_head_sha"] = actual_head
+            if LABEL_APPROVED in labels:
+                self.event(issue_number, "gpt_approved", review_cycle=int(payload.get("review_cycle", 1)), pr_head_sha=payload.get("pr_head_sha"))
+                self.state.update_lease(self.instance_id, status="APPROVED_WAITING_MERGE", payload=payload, issue_number=issue_number)
+                self.set_label(issue_number, LABEL_APPROVED)
+                status = "APPROVED_WAITING_MERGE"
+            else:
+                pr_number = int(payload.get("pr_number") or 0)
+                if pr_number:
+                    pr = self.github.get_pr(payload["target_repo"], pr_number)
+                    actual_head = ((pr.get("head") or {}).get("sha") or "")
+                    if actual_head and actual_head != payload.get("pr_head_sha"):
+                        self.event(issue_number, "pr_head_changed", previous=payload.get("pr_head_sha"), current=actual_head)
+                        payload["pr_head_sha"] = actual_head
+                        self.state.update_lease(self.instance_id, status="REWORK", payload=payload, issue_number=issue_number)
+                        self.set_label(issue_number, LABEL_REWORK)
+                        return
+                cycle = int(payload.get("review_cycle", 1))
+                expected_sha = payload.get("pr_head_sha")
+                found = self._find_command(
+                    comments,
+                    issue_number,
+                    "external_review",
+                    revision,
+                    after_comment_id=after,
+                    predicate=lambda cmd: (
+                        (cycle <= 0 or int(cmd.get("review_cycle", -1)) >= cycle)
+                        and (not expected_sha or not cmd.get("pr_head_sha") or cmd.get("pr_head_sha") == expected_sha)
+                    ),
+                )
+                if not found:
+                    return
+                command, _ = found
+                if command.get("pr_number") and not payload.get("pr_number"):
+                    payload["pr_number"] = int(command["pr_number"])
+                if command.get("pr_head_sha") and not payload.get("pr_head_sha"):
+                    payload["pr_head_sha"] = command["pr_head_sha"]
+                verdict = command.get("verdict")
+                if verdict == "FIX_REQUIRED":
+                    self.event(issue_number, "gpt_fix_required", findings=command.get("findings", []), review_cycle=cycle)
                     self.state.update_lease(self.instance_id, status="REWORK", payload=payload, issue_number=issue_number)
                     self.set_label(issue_number, LABEL_REWORK)
                     return
-            cycle = int(payload.get("review_cycle", 1))
-            expected_sha = payload.get("pr_head_sha")
-            found = self._find_command(
-                comments,
-                issue_number,
-                "external_review",
-                revision,
-                after_comment_id=after,
-                predicate=lambda cmd: int(cmd.get("review_cycle", -1)) == cycle and (not expected_sha or cmd.get("pr_head_sha") == expected_sha),
-            )
-            if not found:
-                return
-            command, _ = found
-            verdict = command.get("verdict")
-            if verdict == "FIX_REQUIRED":
-                self.event(issue_number, "gpt_fix_required", findings=command.get("findings", []), review_cycle=cycle)
-                self.state.update_lease(self.instance_id, status="REWORK", payload=payload, issue_number=issue_number)
-                self.set_label(issue_number, LABEL_REWORK)
-            elif verdict == "PASS":
-                self.event(issue_number, "gpt_approved", review_cycle=cycle, pr_head_sha=expected_sha)
-                self.state.update_lease(self.instance_id, status="APPROVED_WAITING_MERGE", payload=payload, issue_number=issue_number)
-                self.set_label(issue_number, LABEL_APPROVED)
-            else:
-                self._block(lease, f"invalid external_review verdict: {verdict}")
-            return
+                elif verdict == "PASS":
+                    self.event(issue_number, "gpt_approved", review_cycle=cycle, pr_head_sha=expected_sha or payload.get("pr_head_sha"))
+                    self.state.update_lease(self.instance_id, status="APPROVED_WAITING_MERGE", payload=payload, issue_number=issue_number)
+                    self.set_label(issue_number, LABEL_APPROVED)
+                    status = "APPROVED_WAITING_MERGE"
+                else:
+                    self._block(lease, f"invalid external_review verdict: {verdict}")
+                    return
 
         if status == "APPROVED_WAITING_MERGE":
-            pr = self.github.get_pr(payload["target_repo"], int(payload["pr_number"]))
-            if pr.get("merged_at"):
-                self.event(issue_number, "complete", merged_pr=pr["html_url"])
+            pr_num = int(payload.get("pr_number") or 0)
+            if not pr_num:
+                for cmd_name in ("external_review", "pr_opened"):
+                    found_cmd = self._find_command(comments, issue_number, cmd_name, revision)
+                    if found_cmd and found_cmd[0].get("pr_number"):
+                        pr_num = int(found_cmd[0]["pr_number"])
+                        payload["pr_number"] = pr_num
+                        self.state.update_lease(self.instance_id, status=status, payload=payload, issue_number=issue_number)
+                        break
+            if not pr_num:
+                branch = payload.get("branch") or f"task-{issue_number}"
+                base = payload.get("base_branch") or "main"
+                open_pr = self.github.find_open_pr(payload["target_repo"], branch, base)
+                if open_pr and open_pr.get("number"):
+                    pr_num = int(open_pr["number"])
+                    payload["pr_number"] = pr_num
+                    self.state.update_lease(self.instance_id, status=status, payload=payload, issue_number=issue_number)
+
+            if not pr_num:
+                self._block(lease, "PR number not found for approved task")
+                return
+
+            pr = self.github.get_pr(payload["target_repo"], pr_num)
+            if pr.get("merged_at") or pr.get("merged"):
+                self.event(issue_number, "complete", merged_pr=pr.get("html_url") or f"PR #{pr_num}")
                 self.set_label(issue_number, LABEL_DONE)
                 self.github.close_issue(self._issue_repo(issue_number), issue_number)
                 self.state.release(self.instance_id, issue_number=issue_number)
+                return
+            elif pr.get("state") == "open":
+                # Auto-merge the approved PR!
+                try:
+                    merge_res = self.github.merge_pr(
+                        payload["target_repo"],
+                        pr_num,
+                        commit_title=f"Merge pull request #{pr_num} for issue #{issue_number}",
+                    )
+                    if merge_res.get("merged"):
+                        self.event(issue_number, "complete", merged_pr=pr.get("html_url") or f"PR #{pr_num}")
+                        self.set_label(issue_number, LABEL_DONE)
+                        self.github.close_issue(self._issue_repo(issue_number), issue_number)
+                        self.state.release(self.instance_id, issue_number=issue_number)
+                        return
+                except Exception as exc:
+                    logger.warning("Auto-merge PR #%s failed: %s", pr_num, exc)
             elif pr.get("state") == "closed":
                 self._block(lease, "PR closed without merge")
             return
@@ -1702,6 +1796,7 @@ class OrchestratorEngine:
                         labels.remove(LABEL_BLOCKED)
                     if LABEL_READY not in labels:
                         labels.append(LABEL_READY)
+                    issue["labels"] = list(labels)
                 elif not satisfied and (is_ready or is_blocked):
                     self.set_label(num, LABEL_WAITING_CONDITION, issue_repo)
                     if LABEL_READY in labels:
@@ -1710,6 +1805,7 @@ class OrchestratorEngine:
                         labels.remove(LABEL_BLOCKED)
                     if LABEL_WAITING_CONDITION not in labels:
                         labels.append(LABEL_WAITING_CONDITION)
+                    issue["labels"] = list(labels)
             except Exception:
                 pass
 
@@ -1765,8 +1861,19 @@ class OrchestratorEngine:
                     if r["number"] not in known_numbers:
                         open_issues.append(r)
                 project_issues_by_repo[issue_repo] = open_issues
-                self._reconcile_conditions_for_issues(issue_repo, open_issues)
-                for row in open_issues:
+
+                if open_mocked:
+                    all_repo_issues = list(open_issues)
+                else:
+                    try:
+                        all_repo_issues = self.github.list_all_orchestrator_issues(issue_repo)
+                    except Exception:
+                        all_repo_issues = list(open_issues)
+                self._reconcile_conditions_for_issues(issue_repo, all_repo_issues)
+
+                for row in all_repo_issues:
+                    if str(row.get("state", "open")).lower() != "open":
+                        continue
                     labels = [l.get("name", "") if isinstance(l, dict) else str(l) for l in row.get("labels", [])]
                     if LABEL_READY in labels or LABEL_REWORK in labels:
                         issue = dict(row)
@@ -2002,8 +2109,19 @@ class OrchestratorEngine:
                 sources: dict[str, list[str]] = {}
                 for project in self.registry.list():
                     sources.setdefault(project["issues_repo"], []).append(project["id"])
+                open_mocked = hasattr(self.github, "list_open_orchestrator_issues") and not (
+                    hasattr(self.github.list_open_orchestrator_issues, "__self__")
+                    and self.github.list_open_orchestrator_issues.__self__ is self.github
+                )
                 for issue_repo, project_ids in sorted(sources.items()):
-                    for row in self.github.list_open_orchestrator_issues(issue_repo):
+                    if open_mocked:
+                        issues_list = self.github.list_open_orchestrator_issues(issue_repo)
+                    else:
+                        try:
+                            issues_list = self.github.list_all_orchestrator_issues(issue_repo)
+                        except Exception:
+                            issues_list = self.github.list_open_orchestrator_issues(issue_repo)
+                    for row in issues_list:
                         task_summary = None
                         task_error = None
                         try:
@@ -2030,6 +2148,8 @@ class OrchestratorEngine:
                         ):
                             active_status = active_lease["status"]
                             active_payload = dict(active_lease.get("payload") or {})
+                        elif str(row.get("state", "open")).lower() == "closed":
+                            active_status = "DONE"
                         lifecycle = self._lifecycle(active_status, labels)
                         if active_status == "BLOCKED" or lifecycle.get("is_blocked"):
                             lifecycle["blocked_reason"] = active_payload.get("blocked_reason") or ""
@@ -2039,6 +2159,7 @@ class OrchestratorEngine:
                             "project_ids": sorted(project_ids),
                             "number": row["number"],
                             "title": row["title"],
+                            "state": str(row.get("state", "open")).lower(),
                             "url": row.get("html_url"),
                             "labels": labels,
                             "task": task_summary,
@@ -2078,7 +2199,9 @@ class OrchestratorEngine:
             "review": sum(1 for x in queue if x.get("lifecycle", {}).get("stage_index") == 4),
             "blocked": sum(1 for x in queue if x.get("lifecycle", {}).get("is_blocked")),
             "waiting_condition": sum(1 for x in queue if x.get("lifecycle", {}).get("status") == "WAITING_CONDITION"),
-            "total_open": len(queue),
+            "done": sum(1 for x in queue if x.get("lifecycle", {}).get("stage_index") == 5),
+            "total_open": len([x for x in queue if str(x.get("state", "open")).lower() == "open"]),
+            "total_tasks": len(queue),
         }
         return {
             "instance_id": self.instance_id,

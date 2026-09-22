@@ -9,10 +9,11 @@ from typing import Any
 
 
 class StateStore:
-    def __init__(self, path: Path):
+    def __init__(self, path: Path | str):
+        self._lock = threading.RLock()
+        path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         self.path = path
-        self._lock = threading.RLock()
         self.db = sqlite3.connect(path, timeout=30, check_same_thread=False, isolation_level=None)
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("PRAGMA busy_timeout=30000")

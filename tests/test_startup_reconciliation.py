@@ -9,7 +9,17 @@ from unittest import mock
 from unittest.mock import MagicMock
 
 from orchestrator.engine import OrchestratorEngine
-from orchestrator.models import LABEL_DONE, LABEL_READY, LABEL_REWORK, LABEL_RUNNING, Settings
+from orchestrator.models import (
+    LABEL_APPROVED,
+    LABEL_DONE,
+    LABEL_READY,
+    LABEL_REWORK,
+    LABEL_RUNNING,
+    LABEL_WAITING_CONDITION,
+    Settings,
+    canonical_task_hash,
+    parse_task,
+)
 from orchestrator.project import github_repo_from_source, remove_prefix, remove_suffix
 from orchestrator.state import StateStore
 
@@ -320,6 +330,156 @@ class TestStartupReconciliation(unittest.TestCase):
             engine._commit_registry_change("update test")
             log = subprocess.run(["git", "log", "-n", "1", "--oneline"], cwd=root, capture_output=True, text=True)
             self.assertIn("update test", log.stdout)
+
+    def test_gpt_approved_auto_merges_pr_and_completes(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            reg_path = root / "projects.json"
+            reg_path.write_text(json.dumps({
+                "schema_version": 1,
+                "projects": [
+                    {
+                        "id": "proj-1",
+                        "repo": "owner/repo",
+                        "issues_repo": "owner/repo",
+                        "enabled": True,
+                    }
+                ]
+            }), encoding="utf-8")
+
+            settings = Settings(
+                control_repo="",
+                token="",
+                registry_file=reg_path,
+                runtime_dir=root / "runtime",
+                workspace_root=root / "workspace",
+                poll_interval=5,
+                git_transport="https",
+                agy_bin="mock-agy",
+                agent_effort="low",
+                agent_timeout=30,
+                test_timeout=30,
+                lease_timeout=180,
+                dashboard_host="127.0.0.1",
+                dashboard_port=0,
+                allowed_authors=("test-user",),
+                max_workers=2,
+            )
+
+            engine = OrchestratorEngine(settings)
+            engine.github = MagicMock()
+            engine.state.mark_dashboard_verified("http://127.0.0.1:8766")
+
+            # Setup lease in APPROVED_WAITING_MERGE
+            task_body = "```orchestrator-task\n{\"schema_version\":1,\"project\":\"proj-1\",\"type\":\"feature\",\"task_id\":\"task-77\",\"revision\":1,\"title\":\"T77\",\"objective\":\"Do 77\"}\n```"
+            parsed_task = parse_task(task_body)
+            payload = {
+                "revision": 1,
+                "task_id": "task-77",
+                "contract_hash": canonical_task_hash(parsed_task),
+                "target_repo": "owner/repo",
+                "issue_repo": "owner/repo",
+                "pr_number": 42,
+            }
+            engine.state.claim(engine.instance_id, 77, "APPROVED_WAITING_MERGE", payload, max_workers=2)
+
+            # Mock get_issue
+            engine.github.get_issue.return_value = {
+                "number": 77,
+                "state": "open",
+                "user": {"login": "test-user"},
+                "labels": [{"name": LABEL_APPROVED}],
+                "title": "[issue77] Test Approved Task",
+                "body": task_body,
+            }
+            engine.github.comments.return_value = []
+
+            # Mock get_pr (open, not merged yet)
+            engine.github.get_pr.return_value = {
+                "number": 42,
+                "state": "open",
+                "merged": False,
+                "merged_at": None,
+                "html_url": "https://github.com/owner/repo/pull/42",
+            }
+            # Mock merge_pr returning merged=True
+            engine.github.merge_pr.return_value = {"merged": True, "sha": "merge-sha"}
+
+            lease = engine.state.get_lease(77)
+            engine._handle_active(lease)
+
+            # Should have called merge_pr
+            engine.github.merge_pr.assert_called_once_with(
+                "owner/repo",
+                42,
+                commit_title="Merge pull request #42 for issue #77",
+            )
+            # Should close the issue on GitHub
+            engine.github.close_issue.assert_called_once_with("owner/repo", 77)
+            # Lease should be released
+            self.assertIsNone(engine.state.get_lease(77))
+
+    def test_condition_reconciled_with_closed_prerequisite(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            reg_path = root / "projects.json"
+            reg_path.write_text(json.dumps({
+                "schema_version": 1,
+                "projects": [
+                    {
+                        "id": "gamegit",
+                        "repo": "owner/repo",
+                        "issues_repo": "owner/repo",
+                        "enabled": True,
+                    }
+                ]
+            }), encoding="utf-8")
+
+            settings = Settings(
+                control_repo="",
+                token="",
+                registry_file=reg_path,
+                runtime_dir=root / "runtime",
+                workspace_root=root / "workspace",
+                poll_interval=5,
+                git_transport="https",
+                agy_bin="mock-agy",
+                agent_effort="low",
+                agent_timeout=30,
+                test_timeout=30,
+                lease_timeout=180,
+                dashboard_host="127.0.0.1",
+                dashboard_port=0,
+                allowed_authors=("test-user",),
+                max_workers=2,
+            )
+
+            engine = OrchestratorEngine(settings)
+            engine.github = MagicMock()
+
+            # Closed prerequisite task
+            dep_issue = {
+                "number": 6,
+                "title": "[issue2] Prerequisite docs",
+                "state": "closed",
+                "labels": [{"name": LABEL_DONE}],
+                "body": "```orchestrator-task\n{\"schema_version\":1,\"project\":\"gamegit\",\"type\":\"doc\",\"task_id\":\"task-2\",\"revision\":1,\"title\":\"T2\",\"objective\":\"Do 2\"}\n```",
+            }
+            # Open downstream task waiting on issue2
+            waiting_issue = {
+                "number": 7,
+                "title": "[issue3] Runtime skeleton",
+                "state": "open",
+                "labels": [{"name": LABEL_WAITING_CONDITION}],
+                "body": "```orchestrator-task\n{\"schema_version\":1,\"project\":\"gamegit\",\"type\":\"feature\",\"task_id\":\"task-3\",\"revision\":1,\"title\":\"T3\",\"objective\":\"Do 3\",\"condition\":[\"issue2\"]}\n```",
+            }
+
+            all_issues = [dep_issue, waiting_issue]
+            engine._reconcile_conditions_for_issues("owner/repo", all_issues)
+
+            # Issue 7 should now be marked READY!
+            engine.github.set_lifecycle_label.assert_called_with("owner/repo", 7, LABEL_READY)
+            self.assertIn(LABEL_READY, [l if isinstance(l, str) else l.get("name") for l in waiting_issue["labels"]])
 
 
 if __name__ == "__main__":
