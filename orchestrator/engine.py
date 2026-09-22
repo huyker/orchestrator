@@ -1860,8 +1860,6 @@ class OrchestratorEngine:
                 for r in ready_issues:
                     if r["number"] not in known_numbers:
                         open_issues.append(r)
-                project_issues_by_repo[issue_repo] = open_issues
-
                 if open_mocked:
                     all_repo_issues = list(open_issues)
                 else:
@@ -1869,6 +1867,7 @@ class OrchestratorEngine:
                         all_repo_issues = self.github.list_all_orchestrator_issues(issue_repo)
                     except Exception:
                         all_repo_issues = list(open_issues)
+                project_issues_by_repo[issue_repo] = all_repo_issues
                 self._reconcile_conditions_for_issues(issue_repo, all_repo_issues)
 
                 for row in all_repo_issues:
