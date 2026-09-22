@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "enabled": false,
+  "enabled": true,
   "bot_token": "8290407106:AAGK-Zr7uft1eivDnvX4IjhwDx7XrlLQGU8",
   "chat_id": "-5538772664",
   "topic_id": ""
