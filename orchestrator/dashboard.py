@@ -10,7 +10,7 @@ import urllib.request
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import urlparse, parse_qs
 
 from .engine import OrchestratorEngine
 
@@ -73,10 +73,18 @@ class DashboardHandler(BaseHTTPRequestHandler):
         match = re.match(r"^/api/tasks/(\d+)/log(?:[.]txt)?$", route)
         if match:
             issue_num = int(match.group(1))
+            query = parse_qs(urlparse(self.path).query)
+            try:
+                lines = int(query.get("lines", ["10"])[0])
+            except (ValueError, IndexError):
+                lines = 10
+            raw_log = self.engine.get_task_log(issue_num, max_lines=lines)
+            split_lines = raw_log.splitlines() if raw_log else []
             self._json({
                 "ok": True,
                 "issue_number": issue_num,
-                "log": self.engine.get_task_log(issue_num),
+                "log": raw_log,
+                "lines": split_lines,
             })
             return
         self._json({"error": "not found"}, 404)
@@ -153,8 +161,20 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._json({"ok": True, "projects": result, "reconciled": reconciled})
                 return
             if route == "/api/control/retry":
-                self.engine.request_retry()
-                self._json({"ok": True, "message": "retry command posted to active GitHub Issue"})
+                payload = {}
+                try:
+                    payload = self._read_json()
+                except Exception:
+                    pass
+                issue_num = payload.get("issue_number")
+                if issue_num is not None:
+                    try:
+                        issue_num = int(issue_num)
+                    except (ValueError, TypeError):
+                        issue_num = None
+                self.engine.request_retry(issue_number=issue_num)
+                msg = f"Đã kích hoạt thử lại task #{issue_num}" if issue_num else "Đã kích hoạt thử lại task đang nghẽn"
+                self._json({"ok": True, "message": msg, "issue_number": issue_num})
                 return
             if route == "/api/config/agy-model":
                 payload = self._read_json()

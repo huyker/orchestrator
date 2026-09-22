@@ -96,6 +96,142 @@ function switchTab(tabId) {
   }
 }
 
+function copyText(text, ev) {
+  if (ev) {
+    ev.stopPropagation();
+    ev.preventDefault();
+  }
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(() => {
+      alert('Đã sao chép log vào clipboard!');
+    }).catch(() => {
+      prompt('Nhấn Ctrl+C để copy log:', text);
+    });
+  } else {
+    prompt('Nhấn Ctrl+C để copy log:', text);
+  }
+}
+
+function formatAgyLog10(logText, issueNumber) {
+  const raw = (logText || '').trim();
+  if (!raw) {
+    return `
+      <div class="agy-live-log-card">
+        <div class="agy-log-header">
+          <div class="agy-log-title">
+            <span class="live-pulse-dot"></span>
+            <span class="font-mono">AGY EXECUTION LOG (10 DÒNG CUỐI)</span>
+          </div>
+        </div>
+        <div class="agy-log-terminal font-mono">
+          <div class="placeholder-msg" style="padding: 24px 12px; color: #64748b; font-size: 11px;">
+            ⏳ Đang khởi tạo agy runner... Đang chờ output log đầu tiên từ agent.
+          </div>
+        </div>
+        <div class="agy-log-footer font-mono">
+          <span>● Tự động cập nhật mỗi chu kỳ</span>
+          <span>Issue #${issueNumber}</span>
+        </div>
+      </div>
+    `;
+  }
+  const allLines = raw.split('\n');
+  const lines = allLines.slice(-10);
+  const linesHtml = lines.map((line, idx) => {
+    let lineCls = '';
+    if (line.includes('[START]')) lineCls = 'log-hl-start';
+    else if (line.includes('[PROMPT]')) lineCls = 'log-hl-prompt';
+    else if (line.toLowerCase().includes('error') || line.toLowerCase().includes('failed') || line.toLowerCase().includes('exception')) lineCls = 'log-hl-error';
+
+    let formattedLine = esc(line);
+    formattedLine = formattedLine.replace(/^(\[\d{4}-\d{2}-\d{2}[^\]]+\])/, '<span class="log-hl-ts">$1</span>');
+
+    return `
+      <div class="log-line">
+        <span class="log-line-num">${allLines.length - lines.length + idx + 1}</span>
+        <span class="log-line-content ${lineCls}">${formattedLine}</span>
+      </div>
+    `;
+  }).join('');
+
+  const safeRaw = encodeURIComponent(lines.join('\n'));
+
+  return `
+    <div class="agy-live-log-card">
+      <div class="agy-log-header">
+        <div class="agy-log-title">
+          <span class="live-pulse-dot"></span>
+          <span class="font-mono">AGY EXECUTION LOG (10 DÒNG CUỐI)</span>
+        </div>
+        <button class="btn-xs btn-copy-log" onclick="copyText(decodeURIComponent('${safeRaw}'), event)">📋 Copy 10 Dòng</button>
+      </div>
+      <div class="agy-log-terminal font-mono" id="agyLogBox_${issueNumber}">
+        ${linesHtml}
+      </div>
+      <div class="agy-log-footer font-mono">
+        <span>● Đang hoạt động · .orchestrator-runtime</span>
+        <span>Issue #${issueNumber}</span>
+      </div>
+    </div>
+  `;
+}
+
+function resolveParentTask(conditionToken, allProjectIssues) {
+  if (!allProjectIssues || !conditionToken) return null;
+  const clean = String(conditionToken).trim().toLowerCase();
+  const matchNum = clean.match(/\d+/);
+  const num = matchNum ? parseInt(matchNum[0], 10) : null;
+
+  return allProjectIssues.find(p => {
+    if (num && p.number === num) return true;
+    const tId = (p.task && p.task.task_id) || '';
+    if (tId && tId.toLowerCase() === clean) return true;
+    const title = (p.title || '').toLowerCase();
+    if (title.includes(`[${clean}]`) || title.includes(`(${clean})`)) return true;
+    return false;
+  });
+}
+
+function renderParentChip(cond, allProjectIssues) {
+  const parent = resolveParentTask(cond, allProjectIssues);
+  if (!parent) {
+    return `<span class="dep-wire-chip parent-waiting font-mono">⏳ Chờ điều kiện: ${esc(cond)}</span>`;
+  }
+  const plc = parent.lifecycle || {};
+  let pStatusCls = 'parent-waiting';
+  let pStatusText = 'Đang chờ';
+  if (plc.stage_index === 5 || plc.status === 'DONE') {
+    pStatusCls = 'parent-done';
+    pStatusText = '✓ Đã xong';
+  } else if ([1, 2, 3].includes(plc.stage_index) || plc.status === 'RUNNING' || parent.status === 'RUNNING') {
+    pStatusCls = 'parent-running';
+    pStatusText = '⚡ Đang chạy';
+  } else if (plc.stage_index === 4) {
+    pStatusCls = 'parent-running';
+    pStatusText = '👁 GPT Review';
+  }
+
+  const shortTitle = (parent.title || '').replace(/^\[[^\]]+\]\s*/, '');
+  return `
+    <span class="dep-wire-chip ${pStatusCls} font-mono" title="#${parent.number}: ${esc(parent.title)}">
+      ↳ #${parent.number} [${esc(cond)}]: ${esc(shortTitle.slice(0, 30))}${shortTitle.length > 30 ? '…' : ''} (${pStatusText})
+    </span>
+  `;
+}
+
+function findDownstreamDependents(issueNumber, allIssues) {
+  if (!allIssues || !issueNumber) return [];
+  const targetTokens = [`issue${issueNumber}`, `#${issueNumber}`, `task/issue-${issueNumber}`];
+  return allIssues.filter(other => {
+    if (other.number === issueNumber) return false;
+    const conds = (other.task && other.task.condition) || other.conditions || [];
+    return conds.some(c => {
+      const clean = String(c).toLowerCase().trim();
+      return targetTokens.includes(clean) || clean === `issue${issueNumber}` || clean === String(issueNumber);
+    });
+  });
+}
+
 // Stepper Component Generator
 function renderLifecycleStepper(lc = {}) {
   const stages = lc.stepper_stages || [
@@ -219,19 +355,62 @@ function renderDashboardKPIs(status) {
         const isBlocked = task.status === 'BLOCKED' || lc.is_blocked;
         const statusBadgeCls = isBlocked ? 'blocked' : 'running';
         const statusBadgeText = isBlocked ? '⚠️ BLOCKED' : '⚡ RUNNING';
-        return `
-          <div class="active-task-hero-card ${isBlocked ? 'blocked-active' : ''}">
-            <div class="active-task-header">
-              <div class="active-task-title-group">
-                <span class="active-task-badge ${statusBadgeCls}">${statusBadgeText}</span>
-                <span class="active-task-name font-mono">#${esc(task.issue_number)} · ${esc(p.task_id || 'TASK')} (${esc(p.project || p.issue_repo)})</span>
+
+        // Downstream tasks waiting for this running task
+        const downstream = findDownstreamDependents(task.issue_number, status.issues || []);
+        let downstreamHtml = '';
+        if (downstream.length > 0) {
+          downstreamHtml = `
+            <div class="dep-downstream-row">
+              <div class="dep-downstream-label font-mono">
+                <span>↳</span>
+                <span>DÂY NỐI CÁC TASK ĐANG CHỜ TASK NÀY HOÀN THÀNH (${downstream.length}):</span>
               </div>
-              <div class="active-task-actions">
-                ${isBlocked ? `<button class="btn btn-sm btn-warning" onclick="retryActiveTask(event)">🔄 Thử Lại</button>` : ''}
-                <a href="https://github.com/${esc(p.issue_repo || '')}/issues/${esc(task.issue_number)}" target="_blank" class="btn btn-sm btn-outline">Mở Issue trên GitHub ↗</a>
+              <div class="dep-downstream-wires">
+                ${downstream.map(d => `
+                  <span class="dep-child-chip font-mono" title="${esc(d.title)}">
+                    <span class="dep-wire-arrow-sep">↳</span>
+                    #${d.number} · ${esc(d.title.slice(0, 32))}${d.title.length > 32 ? '…' : ''}
+                  </span>
+                `).join('')}
               </div>
             </div>
-            ${renderLifecycleStepper(lc)}
+          `;
+        }
+
+        const logSample = task.task_log || (isBlocked ? (lc.blocked_output || '') : '');
+
+        return `
+          <div class="active-task-hero-card ${isBlocked ? 'blocked-active' : ''}">
+            <div class="active-task-hero-split">
+              <!-- Cột Trái: Thông tin Task & Lifecycle Stepper In-Progress -->
+              <div class="active-task-main-col">
+                <div class="active-task-header">
+                  <div class="active-task-title-group">
+                    <span class="active-task-badge ${statusBadgeCls}">${statusBadgeText}</span>
+                    <span class="active-task-name font-mono">#${esc(task.issue_number)} · ${esc(p.task_id || 'TASK')}</span>
+                  </div>
+                  <div class="active-task-actions">
+                    ${isBlocked ? `<button class="btn btn-sm btn-warning" onclick="retryActiveTask(event)">🔄 Thử Lại</button>` : ''}
+                    <a href="https://github.com/${esc(p.issue_repo || '')}/issues/${esc(task.issue_number)}" target="_blank" class="btn btn-sm btn-outline">Issue #${esc(task.issue_number)} ↗</a>
+                  </div>
+                </div>
+
+                <div class="active-task-submeta font-mono">
+                  <span>🌿 Branch: <b>${esc(p.branch || 'task/issue-' + task.issue_number)}</b></span>
+                  <span>🤖 Agent: <b>${esc(p.executor_profile || p.agent_id || 'executor')}</b></span>
+                  <span>📦 Repo: <b>${esc(p.issue_repo || p.project || '')}</b></span>
+                </div>
+
+                ${renderLifecycleStepper(lc)}
+                ${downstreamHtml}
+              </div>
+
+              <!-- Cột Phải: AGY Live Execution Log (10 Dòng Cuối Cùng) -->
+              <div class="active-task-log-col">
+                ${formatAgyLog10(logSample, task.issue_number)}
+              </div>
+            </div>
           </div>
         `;
       }).join('');
@@ -482,10 +661,15 @@ function copyBlockedLog(btn, e) {
 }
 
 // Retry active task
-async function retryActiveTask(e) {
+async function retryActiveTask(e, issueNumber = null) {
   if (e && e.stopPropagation) e.stopPropagation();
   try {
-    const res = await api('/api/control/retry', { method: 'POST' });
+    const body = issueNumber ? { issue_number: issueNumber } : {};
+    const res = await api('/api/control/retry', {
+      method: 'POST',
+      body: JSON.stringify(body),
+      headers: { 'Content-Type': 'application/json' },
+    });
     alert(res.message || 'Đã kích hoạt thử lại task!');
     await refresh();
   } catch (err) {
@@ -605,13 +789,106 @@ function renderDetailTasks(project) {
     return;
   }
 
-  container.innerHTML = filtered.map(item => {
+  // Tách riêng các task chờ phụ thuộc để đưa xuống dưới
+  let mainTasks = filtered;
+  let waitingTasks = [];
+
+  if (currentTaskFilter === 'all') {
+    waitingTasks = filtered.filter(item => {
+      const lc = item.lifecycle || {};
+      const cond = (item.task && item.task.condition) || [];
+      return lc.status === 'WAITING_CONDITION' || (cond.length > 0 && lc.stage_index === 0);
+    });
+    mainTasks = filtered.filter(item => !waitingTasks.includes(item));
+  } else if (currentTaskFilter === 'waiting') {
+    waitingTasks = filtered;
+    mainTasks = [];
+  }
+
+  function renderSingleTaskCard(item, isInsideWaitingTree = false) {
     const task = item.task || {};
     const lc = item.lifecycle || {};
     const isWaiting = lc.status === 'WAITING_CONDITION';
     const conditions = task.condition || [];
+    const isRunning = [1, 2, 3].includes(lc.stage_index) || lc.status === 'RUNNING' || item.status === 'RUNNING';
+    const isBlocked = lc.status === 'BLOCKED' || lc.is_blocked || item.status === 'BLOCKED';
+    const logSample = item.task_log || (isBlocked ? (lc.blocked_output || '') : '');
+
+    // Downstream dependents waiting for this task
+    const downstream = findDownstreamDependents(item.number, allProjectIssues);
+    let downstreamHtml = '';
+    if (downstream.length > 0 && !isInsideWaitingTree) {
+      downstreamHtml = `
+        <div class="dep-downstream-row" style="margin-top: 10px;">
+          <div class="dep-downstream-label font-mono">
+            <span>↳</span>
+            <span>DÂY NỐI CÁC TASK ĐANG CHỜ TASK NÀY HOÀN THÀNH (${downstream.length}):</span>
+          </div>
+          <div class="dep-downstream-wires">
+            ${downstream.map(d => `
+              <span class="dep-child-chip font-mono" title="${esc(d.title)}">
+                <span class="dep-wire-arrow-sep">↳</span>
+                #${d.number} · ${esc(d.title.slice(0, 32))}${d.title.length > 32 ? '…' : ''}
+              </span>
+            `).join('')}
+          </div>
+        </div>
+      `;
+    }
+
+    // Dependency wire banner if task has conditions
+    let depWireBanner = '';
+    if (conditions.length > 0) {
+      depWireBanner = `
+        <div class="dep-wire-banner">
+          <span class="dep-wire-arrow">↳</span>
+          <span class="dep-wire-title font-mono">DÂY NỐI PHỤ THUỘC VÀO:</span>
+          <div class="dep-chips-list">
+            ${conditions.map(c => renderParentChip(c, allProjectIssues)).join('')}
+          </div>
+        </div>
+      `;
+    }
+
+    // If running or blocked with live log, render 2-column split with AGY log on the right
+    if ((isRunning || isBlocked) && !isInsideWaitingTree) {
+      return `
+        <div class="task-item" style="border-color: ${isBlocked ? 'rgba(239, 68, 68, 0.5)' : 'rgba(6, 182, 212, 0.5)'}; margin-bottom: 16px;">
+          <div class="active-task-hero-split">
+            <div class="active-task-main-col">
+              <div class="task-item-header">
+                <span class="task-ref font-mono">
+                  #${esc(item.number)} · ${esc(task.task_id || 'TASK')}
+                </span>
+                <span class="task-state-badge ${isBlocked ? 'highlight-rose' : 'highlight-cyan'} font-mono">
+                  ${isBlocked ? '⚠️ BLOCKED' : '⚡ RUNNING'}
+                </span>
+              </div>
+              <div class="task-title">
+                <a href="${esc(item.url || '#')}" target="_blank">
+                  ${esc(item.title)} ↗
+                </a>
+              </div>
+              ${depWireBanner}
+              ${renderLifecycleStepper(lc)}
+              ${downstreamHtml}
+              <div class="task-item-footer" style="margin-top: 12px;">
+                <span><b>Loại:</b> ${esc(task.type || 'Chưa định nghĩa')}</span>
+                <span><b>Priority:</b> ${esc(task.priority ?? '--')}</span>
+                <span><b>Rev:</b> ${esc(task.revision ?? '--')}</span>
+                ${isBlocked ? `<button class="btn btn-xs btn-warning" onclick="retryActiveTask(event, ${item.number})" style="margin-left: auto;">🔄 Thử Lại Task #${item.number}</button>` : ''}
+              </div>
+            </div>
+            <div class="active-task-log-col">
+              ${formatAgyLog10(logSample, item.number)}
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
     return `
-      <div class="task-item">
+      <div class="task-item ${isInsideWaitingTree ? 'dep-task-card' : ''}" style="margin-bottom: 14px;">
         <div class="task-item-header">
           <span class="task-ref font-mono">
             #${esc(item.number)} · ${esc(task.task_id || 'ISSUE')}
@@ -625,13 +902,9 @@ function renderDetailTasks(project) {
             ${esc(item.title)} ↗
           </a>
         </div>
-        ${conditions.length > 0 ? `
-          <div class="task-condition-row">
-            <span class="condition-label">Phụ thuộc:</span>
-            ${conditions.map(c => `<span class="condition-pill font-mono">${esc(c)}</span>`).join(' ')}
-          </div>
-        ` : ''}
+        ${depWireBanner}
         ${renderLifecycleStepper(lc)}
+        ${downstreamHtml}
         <div class="task-item-footer">
           <span><b>Loại:</b> ${esc(task.type || 'Chưa định nghĩa')}</span>
           <span><b>Priority:</b> ${esc(task.priority ?? '--')}</span>
@@ -640,7 +913,40 @@ function renderDetailTasks(project) {
         </div>
       </div>
     `;
-  }).join('');
+  }
+
+  let html = '';
+
+  if (mainTasks.length > 0) {
+    html += mainTasks.map(item => renderSingleTaskCard(item, false)).join('');
+  }
+
+  if (waitingTasks.length > 0) {
+    html += `
+      <div class="dependency-pipeline-section">
+        <div class="dep-section-title-bar">
+          <div class="dep-section-badge">
+            <span>🔗</span>
+            <span>CÁC TASK CHỜ PHỤ THUỘC (DEPENDENCY PIPELINE)</span>
+            <span class="count-pill">${waitingTasks.length} tasks chờ</span>
+          </div>
+        </div>
+        <div class="dep-section-desc">
+          Các task dưới đây được xếp ở tầng dưới và có dây nối phụ thuộc trực quan tới các task điều kiện tiên quyết:
+        </div>
+        <div class="dep-tree-container">
+          ${waitingTasks.map(item => `
+            <div class="dep-tree-item">
+              <div class="dep-node-dot" title="Chốt dây nối phụ thuộc"></div>
+              ${renderSingleTaskCard(item, true)}
+            </div>
+          `).join('')}
+        </div>
+      </div>
+    `;
+  }
+
+  container.innerHTML = html;
 }
 
 function renderConfigDisplay(project) {

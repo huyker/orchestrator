@@ -767,6 +767,18 @@ class OrchestratorEngine:
                     or (x.get("task") or {}).get("project") == project["id"]
                 )
             ]
+            p_issues_augmented = []
+            for x in p_issues:
+                xi = dict(x)
+                if not xi.get("task_log"):
+                    t_num = xi.get("number")
+                    if t_num:
+                        log_sample = self.get_task_log(t_num, max_lines=15)
+                        if log_sample:
+                            xi["task_log"] = log_sample
+                p_issues_augmented.append(xi)
+            p_issues = p_issues_augmented
+
             ready_count = sum(1 for x in p_issues if x.get("lifecycle", {}).get("status") == "READY")
             in_prog_count = sum(1 for x in p_issues if x.get("lifecycle", {}).get("stage_index") in (1, 2, 3))
             review_count = sum(1 for x in p_issues if x.get("lifecycle", {}).get("stage_index") == 4)
@@ -1209,6 +1221,15 @@ class OrchestratorEngine:
             self.log_task(issue_number, "QUESTION", f"Agent emitted question: {question.get('question_id')}", message=question.get('message'))
             return
         if code:
+            is_transient = "503" in output or "unavailable" in output.lower() or "temporarily unavailable" in output.lower() or "rate limit" in output.lower()
+            attempt = int(payload.get("transient_retry_count", 0))
+            if is_transient and attempt < 3:
+                payload["transient_retry_count"] = attempt + 1
+                last_line = output.strip().splitlines()[-1] if output.strip().splitlines() else "503 UNAVAILABLE"
+                self.log_task(issue_number, "TRANSIENT_RETRY", f"Detected transient service error: {last_line}. Auto-retrying (attempt {attempt + 1}/3)...")
+                time.sleep(3)
+                self.state.update_lease(self.instance_id, status="REWORK", payload=payload, issue_number=issue_number)
+                return
             self._block(lease, "executor failed", exit_code=code, output=output[-4000:])
             return
 
@@ -2028,20 +2049,22 @@ class OrchestratorEngine:
         self.state.set_paused(False)
         self.state.add_event("resumed", {})
 
-    def request_retry(self) -> None:
+    def request_retry(self, issue_number: int | None = None) -> None:
         if not self.state.is_dashboard_verified():
             raise RuntimeError("Dashboard bootstrap has not been verified; Issue operations are disabled")
-        lease = self.state.get_lease()
+        lease = self.state.get_lease(issue_number=issue_number)
         if not lease:
-            raise RuntimeError("No active task")
+            raise RuntimeError(f"No active task found{' for issue #' + str(issue_number) if issue_number else ''}")
+        target_num = lease["issue_number"]
         payload = dict(lease["payload"])
         payload.pop("blocked_reason", None)
         payload.pop("blocked_output", None)
-        self.state.update_lease(self.instance_id, status="REWORK", payload=payload)
-        self.state.add_event("retry_requested_from_dashboard", {"issue_number": lease["issue_number"]})
+        payload.pop("transient_retry_count", None)
+        self.state.update_lease(self.instance_id, status="REWORK", payload=payload, issue_number=target_num)
+        self.state.add_event("retry_requested_from_dashboard", {"issue_number": target_num})
         if self._github_auth.get("connected"):
             try:
-                self.set_label(lease["issue_number"], LABEL_REWORK)
+                self.set_label(target_num, LABEL_REWORK)
             except Exception:
                 pass
 
