@@ -154,7 +154,7 @@ Rules:
 3. Every referenced dependency must exist exactly once and have a canonical title/contract whose `issue_id` matches.
 4. Self-dependencies and dependency cycles are invalid and must fail closed.
 5. A dependency is satisfied only when the referenced task has reached successful terminal state: canonical Issue closed as completed, `orch:done`/valid `done_byORCH` evidence present, and any required PR is merged.
-6. `orch:approved`, `orch:gpt-review`, `orch:user-gate`, or merely having a passing local review do NOT satisfy a dependency.
+6. `orch:approved`, `orch:gpt-review`, `orch:user-gate`, or merely having a passing local review do NOT satisfy a dependency. A dependency is successful only after merge + canonical Issue close + `orch:done` with valid finalization evidence (`done_byGPT` for the normal GPT-final-gate path; legacy/reconciliation `done_byORCH` may also be accepted).
 7. If any dependency is unresolved, failed, cancelled, blocked, or not successfully merged/done, the dependent task is not claimable.
 8. Orchestrator must reevaluate conditions on every reconciliation. When the last dependency becomes satisfied, it automatically moves the task from `orch:waiting-condition` to `orch:ready` and may claim it immediately when worker capacity is available.
 9. A task with `condition: []` is independently schedulable and may run in parallel with other independent ready tasks.
@@ -185,6 +185,8 @@ Common events:
 [issue1_blocked_byAGY]
 [issue1_recovered_byORCH]
 [issue1_retry_byGPT]
+[issue1_merge_blocked_byGPT]
+[issue1_done_byGPT]
 [issue1_done_byORCH]
 ```
 
@@ -272,7 +274,26 @@ Verdict: PASS
 ...
 ```
 
-Then move lifecycle to `orch:approved` when permitted.
+GPT is the final gate. A PASS is not the end of the action; it authorizes an immediate merge transaction for that exact reviewed HEAD.
+
+After posting `[issueX_review_pass_byGPT]`:
+
+1. re-fetch the PR immediately;
+2. verify the current PR HEAD still equals the reviewed `head_sha`;
+3. verify the PR is open, not draft, and mergeable;
+4. merge the PR immediately using `expected_head_sha = reviewed head_sha`;
+5. after a successful merge, post `[issueX_done_byGPT]` with the merge SHA;
+6. set lifecycle label to `orch:done`;
+7. close the canonical Issue as completed.
+
+Do **not** stop at `orch:approved` after a successful GPT PASS.
+
+`orch:approved` is only a transient/blocked-merge state when GPT has passed the exact HEAD but GitHub cannot merge for a technical reason such as conflict, required check, branch protection, or permission. In that case:
+
+- post `[issueX_merge_blocked_byGPT]` with the exact reviewed HEAD and reason;
+- keep the Issue open;
+- do not claim DONE;
+- once the technical blocker is resolved, re-fetch the PR and verify the reviewed HEAD is unchanged before merging. If HEAD changed, the PASS is stale and a new review is required.
 
 A PASS applies only to the exact tuple:
 
@@ -350,6 +371,7 @@ When checking status or recovering context:
 - fail closed on same-revision task-body mutation;
 - closed Issues are not executable;
 - merged PR + open canonical Issue should reconcile toward DONE;
+- normal GPT-reviewed success path is `review_pass_byGPT -> merge -> done_byGPT -> orch:done -> Issue closed`;
 - recompute every task's `condition` satisfaction during reconciliation;
 - automatically transition `orch:waiting-condition` → `orch:ready` when all dependencies become successfully DONE.
 
