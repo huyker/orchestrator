@@ -15,21 +15,37 @@ _GITHUB_PATTERNS = (
 )
 
 
+def remove_suffix(s: str, suffix: str) -> str:
+    """Safely remove suffix, compatible with Python < 3.9 on Ubuntu and Windows."""
+    if suffix and s.endswith(suffix):
+        return s[:-len(suffix)]
+    return s
+
+
+def remove_prefix(s: str, prefix: str) -> str:
+    """Safely remove prefix, compatible with Python < 3.9 on Ubuntu and Windows."""
+    if prefix and s.startswith(prefix):
+        return s[len(prefix):]
+    return s
+
+
 def github_repo_from_source(source: str) -> tuple[str, None]:
     """Return owner/repo from a GitHub URL, SSH URL, or owner/repo shorthand."""
-    raw = str(source or "").strip().strip('"')
+    raw = str(source or "").strip().strip('"').strip("'")
+    raw = raw.replace("\\", "/")
     if not raw:
         raise ValueError("GitHub repository URL is required")
 
     for pattern in _GITHUB_PATTERNS:
         match = pattern.match(raw)
         if match:
-            return match.group("repo").removesuffix(".git"), None
+            return remove_suffix(match.group("repo"), ".git"), None
 
     raise ValueError(
         "Unsupported GitHub repository. Use owner/repo, "
         "git@github.com:owner/repo.git, or https://github.com/owner/repo.git"
     )
+
 
 def default_project_id(repo: str) -> str:
     name = repo.split("/", 1)[-1]

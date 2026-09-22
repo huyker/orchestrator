@@ -146,7 +146,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 return
             if route == "/api/control/sync":
                 result = self.engine.sync_projects()
-                self._json({"ok": True, "projects": result})
+                reconciled = self.engine.reconcile_startup_state()
+                self._json({"ok": True, "projects": result, "reconciled": reconciled})
                 return
             if route == "/api/control/retry":
                 self.engine.request_retry()

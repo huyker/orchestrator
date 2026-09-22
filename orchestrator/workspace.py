@@ -6,6 +6,8 @@ import subprocess
 from pathlib import Path
 
 from .models import Settings
+from .project import github_repo_from_source, remove_prefix, remove_suffix
+
 
 
 class WorkspaceManager:
@@ -33,7 +35,8 @@ class WorkspaceManager:
         return f"https://github.com/{repo}.git"
 
     def repo_dir(self, repo: str) -> Path:
-        owner, name = repo.split("/", 1)
+        clean_repo = repo.replace("\\", "/").strip()
+        owner, name = clean_repo.split("/", 1)
         return (self.settings.workspace_root / owner / name).resolve()
 
     def remote_default_branch(self, root: Path) -> str:
@@ -120,12 +123,13 @@ class WorkspaceManager:
         expected_origin = self.clone_url(repo)
         actual_origin = self.run(["git", "remote", "get-url", "origin"], cwd=root)
         if actual_origin != expected_origin:
-            normalized_actual = (
-                actual_origin.removesuffix(".git")
-                .replace("https://github.com/", "")
-                .replace("git@github.com:", "")
-            )
-            if normalized_actual != repo:
+            try:
+                normalized_actual, _ = github_repo_from_source(actual_origin)
+            except Exception:
+                normalized_actual = remove_suffix(actual_origin.strip().rstrip("/"), ".git")
+                for prefix in ("ssh://git@github.com/", "git@github.com:", "https://github.com/", "http://github.com/"):
+                    normalized_actual = remove_prefix(normalized_actual, prefix)
+            if normalized_actual.lower() != repo.lower():
                 raise RuntimeError(
                     f"Managed path {root} belongs to {actual_origin}, expected {repo}"
                 )

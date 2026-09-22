@@ -113,11 +113,25 @@ class AllInOneApplication:
         if self.stop.is_set():
             return
 
+        try:
+            reconcile_info = self.engine.reconcile_startup_state()
+            print(
+                f"Startup Git & Issue reconciliation complete: "
+                f"{reconcile_info.get('projects_synced', 0)} projects, "
+                f"{reconcile_info.get('open_issues_inspected', 0)} open issues inspected, "
+                f"{reconcile_info.get('adopted_leases', 0)} leases adopted, "
+                f"{reconcile_info.get('reconstructed_leases', 0)} leases reconstructed, "
+                f"{reconcile_info.get('released_leases', 0)} leases released"
+            )
+        except Exception as exc:
+            self.engine.state.add_event("startup_reconcile_error", {"error": str(exc)})
+
         self.engine.state.add_event(
             "worker_enabled",
             {"reason": "dashboard_verified_projects_synced_and_github_connected"},
         )
         self.engine.serve_loop(self.stop)
+
 
     def run(self) -> None:
         host = self.settings.dashboard_host

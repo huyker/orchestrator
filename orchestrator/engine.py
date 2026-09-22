@@ -546,6 +546,149 @@ class OrchestratorEngine:
         finally:
             self._sync_lock.release()
 
+    def reconcile_startup_state(self) -> dict[str, Any]:
+        """On startup, query Git and GitHub to synchronize all open issues, adopt existing leases,
+        and reconstruct/resume interrupted tasks so processing continues seamlessly."""
+        summary: dict[str, Any] = {
+            "adopted_leases": 0,
+            "reconstructed_leases": 0,
+            "released_leases": 0,
+            "open_issues_inspected": 0,
+            "projects_synced": 0,
+            "errors": [],
+        }
+
+        # Step 1: Immediately adopt any existing leases from previous process
+        try:
+            adopted = self.state.adopt_leases_on_startup(self.instance_id)
+            summary["adopted_leases"] = len(adopted)
+        except Exception as exc:
+            summary["errors"].append(f"adopt_leases_error: {exc}")
+
+        # Step 2: Check Git and GitHub for registered projects
+        try:
+            projects = self.registry.list()
+            summary["projects_synced"] = len(projects)
+        except Exception as exc:
+            summary["errors"].append(f"registry_error: {exc}")
+            return summary
+
+        sources: dict[str, list[dict[str, Any]]] = {}
+        for p in projects:
+            sources.setdefault(p["issues_repo"], []).append(p)
+
+        for issue_repo, projs in sources.items():
+            try:
+                open_issues = self.github.list_open_orchestrator_issues(issue_repo)
+            except Exception as exc:
+                summary["errors"].append(f"github_list_issues_error ({issue_repo}): {exc}")
+                continue
+
+            summary["open_issues_inspected"] += len(open_issues)
+
+            # Reconcile conditions
+            try:
+                self._reconcile_conditions_for_issues(issue_repo, open_issues)
+            except Exception:
+                pass
+
+            for row in open_issues:
+                num = int(row.get("number") or 0)
+                if not num:
+                    continue
+                labels = [l.get("name", "") if isinstance(l, dict) else str(l) for l in row.get("labels", [])]
+                issue_state = str(row.get("state", "open")).lower()
+
+                # If issue was closed or marked done on GitHub, release lease if one exists
+                if issue_state == "closed" or LABEL_DONE in labels or "orch:done" in labels:
+                    existing = self.state.get_lease(num)
+                    if existing:
+                        self.state.release(issue_number=num)
+                        summary["released_leases"] += 1
+                    continue
+
+                # Determine lifecycle from labels
+                lc_status = ""
+                if LABEL_REWORK in labels:
+                    lc_status = "REWORK"
+                elif LABEL_RUNNING in labels:
+                    lc_status = "REWORK"  # Interrupted run should resume as rework
+                elif LABEL_QUESTION in labels:
+                    lc_status = "WAITING_ANSWER"
+                elif LABEL_GATE in labels:
+                    lc_status = "WAITING_USER_GATE"
+                elif LABEL_GPT_REVIEW in labels or LABEL_APPROVED in labels:
+                    lc_status = "WAITING_GPT_REVIEW"
+
+                if not lc_status:
+                    continue
+
+                existing = self.state.get_lease(num)
+                if existing:
+                    cur_status = existing.get("status")
+                    cur_payload = dict(existing.get("payload") or {})
+                    # If question or user gate was answered/approved while offline, update to REWORK
+                    if cur_status == "WAITING_ANSWER":
+                        try:
+                            comments = self.github.comments(issue_repo, num)
+                            rev = int(cur_payload.get("revision", 1))
+                            after = int(cur_payload.get("command_after_comment_id", 0))
+                            qid = cur_payload.get("pending_question_id")
+                            if self._find_command(comments, num, "answer", rev, after_comment_id=after, predicate=lambda c: c.get("question_id") == qid):
+                                cur_payload.pop("pending_question_id", None)
+                                self.state.update_lease(self.instance_id, status="REWORK", payload=cur_payload, issue_number=num)
+                                self.set_label(num, LABEL_REWORK, issue_repo)
+                        except Exception:
+                            pass
+                    elif cur_status == "WAITING_USER_GATE":
+                        try:
+                            comments = self.github.comments(issue_repo, num)
+                            rev = int(cur_payload.get("revision", 1))
+                            after = int(cur_payload.get("command_after_comment_id", 0))
+                            gid = cur_payload.get("pending_gate_id")
+                            ad = cur_payload.get("pending_gate_digest")
+                            sh = cur_payload.get("pending_gate_pr_head_sha")
+                            if self._find_command(comments, num, "approve_gate", rev, after_comment_id=after, predicate=lambda c: c.get("gate_id") == gid and c.get("artifact_digest") == ad and c.get("pr_head_sha") == sh):
+                                approved = dict(cur_payload.get("approved_gates", {}))
+                                approved[gid] = {"artifact_digest": ad, "pr_head_sha": sh}
+                                cur_payload["approved_gates"] = approved
+                                cur_payload.pop("pending_gate_id", None)
+                                cur_payload.pop("pending_gate_digest", None)
+                                cur_payload.pop("pending_gate_pr_head_sha", None)
+                                self.state.update_lease(self.instance_id, status="REWORK", payload=cur_payload, issue_number=num)
+                                self.set_label(num, LABEL_REWORK, issue_repo)
+                        except Exception:
+                            pass
+                    continue
+
+                # If no lease exists in DB, reconstruct it from GitHub issue!
+                try:
+                    task = parse_task(row.get("body") or "")
+                    logical_id = self._parse_canonical_id(row)
+                    primary_proj = projs[0]
+                    payload = {
+                        "project": task.get("project") or primary_proj["id"],
+                        "target_repo": primary_proj["repo"],
+                        "base_branch": task.get("base_branch") or primary_proj.get("default_branch", "main"),
+                        "task_id": task.get("task_id", f"task-{num}"),
+                        "logical_issue_id": logical_id,
+                        "revision": int(task.get("revision", 1)),
+                        "contract_hash": canonical_task_hash(task),
+                        "approved_gates": {},
+                        "rework_count": 0,
+                        "review_cycle": 0,
+                        "issue_repo": issue_repo,
+                        "reconstructed_on_startup": True,
+                    }
+                    self.state.force_claim(self.instance_id, num, lc_status, payload)
+                    summary["reconstructed_leases"] += 1
+                except Exception as exc:
+                    summary["errors"].append(f"reconstruct_lease_error (#{num}): {exc}")
+
+        self.state.add_event("startup_git_reconciled", summary)
+        return summary
+
+
     def project_snapshot(self, issues: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
         rows = []
         all_issues = issues or []
@@ -1463,10 +1606,11 @@ class OrchestratorEngine:
                 self._reconcile_conditions_for_issues(issue_repo, open_issues)
                 for row in open_issues:
                     labels = [l.get("name", "") if isinstance(l, dict) else str(l) for l in row.get("labels", [])]
-                    if LABEL_READY in labels:
+                    if LABEL_READY in labels or LABEL_REWORK in labels:
                         issue = dict(row)
                         issue["_issue_repo"] = issue_repo
                         issue["_allowed_projects"] = sorted(project_ids)
+                        issue["_is_rework"] = LABEL_REWORK in labels
                         ready.append(issue)
 
             def priority(issue: dict) -> tuple[int, int, str]:
@@ -1555,13 +1699,15 @@ class OrchestratorEngine:
                         "rework_count": 0,
                         "review_cycle": 0,
                     }
-                    if not self.state.claim(self.instance_id, num, "RUNNING", payload, max_workers=self.settings.max_workers):
+                    initial_status = "REWORK" if issue.get("_is_rework") else "RUNNING"
+                    if not self.state.claim(self.instance_id, num, initial_status, payload, max_workers=self.settings.max_workers):
                         continue
                     lease = self.state.get_lease(num)
                     assert lease
                     current_active.append(lease)
                     available_slots -= 1
-                    self.set_label(num, LABEL_RUNNING, issue_repo)
+                    if initial_status == "RUNNING":
+                        self.set_label(num, LABEL_RUNNING, issue_repo)
                     self.event(num, "started", post_to_github=False, task_id=task["task_id"], project=task["project"])
                     self._handle_active(lease)
                 except Exception as exc:

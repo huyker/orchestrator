@@ -216,6 +216,65 @@ class StateStore:
                 self.db.execute("ROLLBACK")
                 raise
 
+    def adopt_leases_on_startup(self, new_instance_id: str) -> list[dict[str, Any]]:
+        """Adopt all existing leases upon startup to the new instance_id immediately."""
+        now = time.time()
+        with self._lock:
+            self.db.execute("BEGIN IMMEDIATE")
+            try:
+                rows = self.db.execute(
+                    "SELECT instance_id, issue_number, status, payload, heartbeat, created_at FROM task_leases"
+                ).fetchall()
+                adopted = []
+                for row in rows:
+                    lease = self._row_to_lease(row)
+                    if not lease:
+                        continue
+                    old_instance = lease["instance_id"]
+                    payload = dict(lease["payload"])
+                    status = lease["status"]
+                    if old_instance != new_instance_id:
+                        payload["recovered_from_instance"] = old_instance
+                        if status == "RUNNING":
+                            status = "REWORK"
+                    self.db.execute(
+                        "UPDATE task_leases SET instance_id=?, status=?, payload=?, heartbeat=? WHERE issue_number=?",
+                        (new_instance_id, status, json.dumps(payload, ensure_ascii=False), now, lease["issue_number"]),
+                    )
+                    lease.update({"instance_id": new_instance_id, "status": status, "payload": payload, "heartbeat": now})
+                    adopted.append(lease)
+                if adopted:
+                    first = adopted[0]
+                    self.db.execute(
+                        "UPDATE lease SET instance_id=?, status=?, payload=?, heartbeat=?, issue_number=? WHERE singleton=1",
+                        (new_instance_id, first["status"], json.dumps(first["payload"], ensure_ascii=False), now, first["issue_number"]),
+                    )
+                self.db.execute("COMMIT")
+                return adopted
+            except Exception:
+                self.db.execute("ROLLBACK")
+                raise
+
+    def force_claim(self, instance_id: str, issue_number: int, status: str, payload: dict[str, Any]) -> None:
+        """Forcibly claim or upsert a lease (used during startup reconciliation from GitHub)."""
+        now = time.time()
+        encoded = json.dumps(payload, ensure_ascii=False)
+        with self._lock:
+            self.db.execute("BEGIN IMMEDIATE")
+            try:
+                self.db.execute(
+                    "INSERT OR REPLACE INTO task_leases(issue_number, instance_id, status, payload, heartbeat, created_at) VALUES(?,?,?,?,?,?)",
+                    (issue_number, instance_id, status, encoded, now, now),
+                )
+                self.db.execute(
+                    "INSERT OR REPLACE INTO lease(singleton, instance_id, issue_number, status, payload, heartbeat, created_at) VALUES(1,?,?,?,?,?,?)",
+                    (instance_id, issue_number, status, encoded, now, now),
+                )
+                self.db.execute("COMMIT")
+            except Exception:
+                self.db.execute("ROLLBACK")
+                raise
+
     def takeover_if_stale(self, instance_id: str, timeout_seconds: int, issue_number: int | None = None) -> dict[str, Any] | None:
         now = time.time()
         with self._lock:
