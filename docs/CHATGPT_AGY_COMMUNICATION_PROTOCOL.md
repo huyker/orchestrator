@@ -196,6 +196,37 @@ head_sha: def456
 artifact_digest: sha256:...
 ```
 
+#### Merge bị chặn sau GPT PASS
+
+```text
+[issue1_merge_blocked_byGPT]
+
+revision: 4
+review_cycle: 3
+pr: 17
+head_sha: def456
+reason_code: MERGE_CONFLICT
+
+Details:
+...
+```
+
+Event này chỉ dùng khi GPT đã PASS đúng HEAD nhưng GitHub chưa thể merge vì blocker kỹ thuật. Issue giữ mở và có thể tạm ở `orch:approved`. Nếu HEAD thay đổi thì PASS cũ mất hiệu lực và phải review lại.
+
+#### Finalize sau merge
+
+```text
+[issue1_done_byGPT]
+
+revision: 4
+review_cycle: 3
+pr: 17
+reviewed_head_sha: def456
+merge_sha: 999aaa
+```
+
+Đây là terminal success event chuẩn khi reviewer cuối cùng là GPT.
+
 #### Retry
 
 ```text
@@ -295,7 +326,9 @@ branch: task/issue-42-game-0001
 reason: stale lease recovered after restart
 ```
 
-#### Task hoàn tất
+#### Task hoàn tất do reconciliation
+
+Normal GPT-reviewed path dùng `[issue1_done_byGPT]`. `[issue1_done_byORCH]` chỉ dùng cho reconciliation/legacy/non-GPT-reviewer flow khi Orchestrator phát hiện PR đã được merge hợp lệ từ bên ngoài.
 
 ```text
 [issue1_done_byORCH]
@@ -498,7 +531,7 @@ Mapping:
 | Chờ user approval | `orch:user-gate` |
 | GPT yêu cầu fix | `orch:rework` |
 | Chờ GPT review | `orch:gpt-review` |
-| GPT PASS | `orch:approved` |
+| GPT PASS nhưng merge đang bị chặn kỹ thuật | `orch:approved` |
 | Không thể tiếp tục | `orch:blocked` |
 | Merge/complete | `orch:done` |
 
@@ -966,32 +999,58 @@ reason: Out-of-scope architecture issue discovered during review.
 
 ---
 
-## 18. Merge / Done
+## 18. Merge / Done — GPT là final gate
 
-Sau GPT PASS:
+Khi reviewer = GPT, `/review` PASS phải thực hiện merge và resolve ngay trong cùng transaction logic.
 
-```text
-WAITING_GPT_REVIEW
-→ APPROVED_WAITING_MERGE
-label → orch:approved
-```
+### 18.1. Success path
 
-Sau merge:
+Sau khi GPT đã verify exact PR HEAD:
 
 ```text
-[issue1_done_byORCH]
-
-pr: 17
-merge_sha: ...
-```
-
-Sau đó:
-
-```text
+[issue1_review_pass_byGPT]
+        ↓
+re-fetch PR
+        ↓
+current_head_sha == reviewed_head_sha ?
+        │
+       YES
+        ↓
+merge PR with expected_head_sha
+        ↓
+[issue1_done_byGPT]
+        ↓
 label → orch:done
-Issue → closed
+Issue → closed(completed)
 release task worker lease
 ```
+
+Rules:
+
+1. GPT phải re-fetch PR ngay trước merge.
+2. Merge chỉ được phép nếu current HEAD khớp chính xác HEAD đã review.
+3. Merge request phải dùng `expected_head_sha` để chống race/stale review.
+4. Sau merge thành công, comment `[issueX_done_byGPT]` phải chứa `revision`, `review_cycle`, PR number, reviewed HEAD SHA và merge SHA.
+5. Sau đó đặt `orch:done` và close Issue as completed.
+6. Không dừng ở `orch:approved` nếu merge thành công.
+
+### 18.2. Merge blocked path
+
+Nếu GPT PASS nhưng merge bị chặn bởi conflict, required check, branch protection hoặc permission:
+
+```text
+[issue1_merge_blocked_byGPT]
+label → orch:approved
+Issue remains open
+```
+
+Sau khi blocker được xử lý:
+
+- re-fetch PR;
+- nếu HEAD vẫn đúng reviewed HEAD → merge được phép;
+- nếu HEAD đã đổi → GPT PASS cũ invalid, chuyển lại `orch:gpt-review` và review lại.
+
+`orch:approved` vì vậy chỉ là trạng thái tạm khi **review đã PASS nhưng merge chưa thể hoàn tất về mặt kỹ thuật**.
 
 ---
 
@@ -1080,15 +1139,18 @@ close Issue
                FIX_REQUIRED    PASS
                     │           │
                     ▼           ▼
-                  REWORK      APPROVED
+                  REWORK       MERGE
                     │           │
                     └─AGY───────┘
                                 │
-                                ▼
-                              MERGE
-                                │
-                                ▼
-                              DONE
+                     ┌──────────┴──────────┐
+                     │ success             │ blocked
+                     ▼                     ▼
+                    DONE               APPROVED
+                                           │
+                                  resolve blocker / recheck HEAD
+                                           │
+                                           └────→ MERGE
 ```
 
 ---
@@ -1212,16 +1274,26 @@ head_sha: def456
 Verdict: PASS
 ```
 
-### Step 10 — merge
+### Step 10 — GPT merges and resolves
+
+GPT re-fetches PR #17, verifies HEAD is still `def456`, and merges with `expected_head_sha=def456`.
 
 ```text
-[issue1_done_byORCH]
+[issue1_done_byGPT]
 
+revision: 1
+review_cycle: 2
 pr: 17
+reviewed_head_sha: def456
 merge_sha: 999aaa
 ```
 
-Close Issue.
+Then:
+
+```text
+label → orch:done
+Issue → closed(completed)
+```
 
 ---
 
@@ -1269,6 +1341,10 @@ Minimum automated tests:
 - `review_fix_byGPT` moves same task to rework;
 - rework uses same Issue/branch/PR;
 - `review_pass_byGPT` requires exact HEAD SHA;
+- GPT PASS immediately attempts merge using `expected_head_sha`;
+- successful GPT merge posts `done_byGPT`, sets `orch:done`, and closes Issue;
+- merge blocker after PASS produces `merge_blocked_byGPT` and leaves Issue open;
+- HEAD change after PASS invalidates approval and requires re-review;
 - new commit invalidates old GPT PASS;
 - restart recovers open task;
 - closed Issue is not executed;
@@ -1309,10 +1385,11 @@ NEW WORK      → create a new canonical Issue
 SAME WORK     → communicate in the same Issue
 AGY FINISHED  → [issueX_fixdone_byAGY]
 GPT NEED FIX  → [issueX_review_fix_byGPT]
-GPT PASS      → [issueX_review_pass_byGPT]
+GPT PASS      → [issueX_review_pass_byGPT] → merge immediately
+MERGE BLOCKED → [issueX_merge_blocked_byGPT]
 QUESTION      → [issueX_question_byAGY]
 ANSWER        → [issueX_answer_byGPT]
-DONE          → [issueX_done_byORCH]
+DONE          → [issueX_done_byGPT] → orch:done → close Issue
 ```
 
 **Một task không được phân mảnh thành nhiều Issue chỉ để biểu diễn trạng thái.**
