@@ -390,3 +390,35 @@ docs/CHATGPT_AGY_COMMUNICATION_PROTOCOL.md
 ```
 
 Fetch the latest version when exact event schema, lifecycle behavior, sync semantics or AGY implementation details matter.
+
+## Automatic GPT review trigger and reverse task assignment
+
+The GitHub-side trigger condition for ChatGPT review is:
+
+```text
+Issue state = open
+lifecycle label = orch:gpt-review
+review.reviewer contains GPT
+```
+
+A ChatGPT condition-watch may periodically scan all enabled managed projects for this condition. The label/event is the canonical trigger signal; do not invent a separate review-request Issue.
+
+When a matching Issue is found, ChatGPT applies the same `/review` behavior automatically:
+
+- inspect the current canonical task, comments, PR, exact HEAD, diff, tests and project rules;
+- FIX_REQUIRED → same Issue + `orch:rework`;
+- PASS → exact-HEAD merge → `done_byGPT` → `orch:done` → close Issue;
+- merge blocked → `merge_blocked_byGPT`, leave Issue open.
+
+### GPT assigning work back to Orchestrator/AGY
+
+ChatGPT may create new canonical Issues in a managed project's `issues_repo` when:
+
+1. the user explicitly asks GPT to delegate work;
+2. review discovers genuinely out-of-scope follow-up work that should not block the current Issue;
+3. an approved plan clearly defines the next work package and its dependency condition.
+
+New work must use the normal `[issueN]` + `orchestrator-task` contract and an explicit `condition` list.
+
+Never create a new Issue for in-scope review fixes. Those always remain on the same Issue / same branch / same PR.
+
