@@ -1393,3 +1393,65 @@ DONE          → [issueX_done_byGPT] → orch:done → close Issue
 ```
 
 **Một task không được phân mảnh thành nhiều Issue chỉ để biểu diễn trạng thái.**
+
+## 27. Automatic GPT review trigger and bidirectional task delegation
+
+### 27.1. GitHub review trigger signal
+
+The canonical GitHub trigger condition for GPT review is:
+
+```text
+Issue = OPEN
+label = orch:gpt-review
+task.review.reviewer contains GPT
+```
+
+This condition is equivalent to the user manually typing `/review`.
+
+A ChatGPT-side condition watcher may poll all enabled managed-project `issues_repo` values and invoke the full GPT review flow when the condition becomes true.
+
+Important limitation: GitHub Issues/labels are the trigger **signal**, but ChatGPT does not expose a generic inbound webhook endpoint for GitHub to invoke directly. Therefore a ChatGPT automation may use periodic condition polling. If a true immediate webhook is required, it must be implemented by an external service/API integration rather than assumed by this protocol.
+
+### 27.2. Automatic review behavior
+
+When the trigger is detected:
+
+```text
+orch:gpt-review
+      ↓
+GPT fetches canonical Issue + latest fixdone + PR + exact HEAD + diff + tests
+      ↓
+FIX_REQUIRED ──→ same Issue → orch:rework
+      │
+      └ PASS ──→ verify HEAD again → merge → done_byGPT → orch:done → close
+```
+
+No separate "review request" Issue is created.
+
+### 27.3. GPT → Orchestrator/AGY reverse delegation
+
+GPT may assign work back to the local Orchestrator by creating a new canonical Issue when:
+
+- the user explicitly asks GPT to delegate a new task;
+- review discovers a genuinely out-of-scope bug/debt/follow-up;
+- an approved plan defines a next executable work package.
+
+The new task must:
+
+1. allocate the next logical `issueN`;
+2. contain an `orchestrator-task` block;
+3. declare `condition` dependencies explicitly;
+4. use `orch:ready` only when dependencies are satisfied, otherwise `orch:waiting-condition`;
+5. set the intended final reviewer explicitly.
+
+If a follow-up was discovered during review, link it back from the original Issue with:
+
+```text
+[issueX_followup_created_byGPT]
+
+followup_issue: #<number>
+reason: <why this is outside the current task scope>
+```
+
+In-scope defects MUST NOT create a new Issue; they stay in the original Issue as `review_fix_byGPT`.
+
