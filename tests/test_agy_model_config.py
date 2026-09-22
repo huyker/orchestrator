@@ -127,6 +127,13 @@ class AgyModelConfigTests(unittest.TestCase):
 
                 engine._run_with_heartbeat = fake_run
 
+                # run_agent resolves the AGY executable before invoking the mocked
+                # subprocess runner. CI does not install AGY, so isolate this unit
+                # test from host binary availability.
+                which_patch = patch("orchestrator.engine.shutil.which", return_value="/mock/agy")
+                which_patch.start()
+                self.addCleanup(which_patch.stop)
+
                 agent = {
                     "id": "test-agent",
                     "agy_agent": "03_executor",
