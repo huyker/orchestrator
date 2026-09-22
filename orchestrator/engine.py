@@ -485,21 +485,31 @@ class OrchestratorEngine:
             return self.settings.control_repo
         raise RuntimeError("managed-project issue_repo is required; no legacy ORCH_CONTROL_REPO fallback is configured")
 
-    def event(
+    def format_event_comment(
         self,
         issue: int,
         event_type: str,
         *,
         issue_repo: str | None = None,
         logical_issue_id: str | None = None,
-        post_to_github: bool | None = None,
+        task: dict[str, Any] | None = None,
         **payload: Any,
-    ) -> int:
+    ) -> tuple[str, dict[str, Any], str]:
         repo = self._issue_repo(issue, issue_repo)
-        logical_issue = logical_issue_id or f"issue{issue}"
-        lease = self.state.get_lease()
-        if lease and int(lease.get("issue_number", 0)) == int(issue):
-            logical_issue = lease.get("payload", {}).get("logical_issue_id") or logical_issue
+        logical_issue = logical_issue_id
+        if not logical_issue and task:
+            logical_issue = task.get("issue_id")
+        if not logical_issue:
+            lease = self.state.get_lease(issue)
+            if not lease:
+                l = self.state.get_lease()
+                if l and int(l.get("issue_number", 0)) == int(issue):
+                    lease = l
+            if lease and int(lease.get("issue_number", 0)) == int(issue):
+                p = lease.get("payload", {})
+                logical_issue = p.get("logical_issue_id") or (p.get("task") or {}).get("issue_id")
+        if not logical_issue:
+            logical_issue = f"issue{issue}"
 
         actor = "ORCH"
         spec_event = event_type
@@ -532,6 +542,48 @@ class OrchestratorEngine:
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             **payload,
         }
+        header = f"[{logical_issue}_{spec_event}_by{actor}]"
+        comment_body = f"{header}\n\n```orchestrator-event\n" + json.dumps(body, ensure_ascii=False, indent=2) + "\n```"
+        return header, body, comment_body
+
+    def format_handoff(
+        self,
+        issue: int,
+        task: dict[str, Any] | None = None,
+        *,
+        logical_issue_id: str | None = None,
+        issue_repo: str | None = None,
+        **payload: Any,
+    ) -> tuple[str, dict[str, Any], str]:
+        return self.format_event_comment(
+            issue,
+            "ready_for_gpt_review",
+            issue_repo=issue_repo,
+            logical_issue_id=logical_issue_id,
+            task=task,
+            **payload,
+        )
+
+    def event(
+        self,
+        issue: int,
+        event_type: str,
+        *,
+        issue_repo: str | None = None,
+        logical_issue_id: str | None = None,
+        task: dict[str, Any] | None = None,
+        post_to_github: bool | None = None,
+        **payload: Any,
+    ) -> int:
+        header, body, comment_body = self.format_event_comment(
+            issue,
+            event_type,
+            issue_repo=issue_repo,
+            logical_issue_id=logical_issue_id,
+            task=task,
+            **payload,
+        )
+        repo = self._issue_repo(issue, issue_repo)
         self.state.add_event(event_type, {"issue_repo": repo, "issue_number": issue, **payload})
 
         # Telegram notification
@@ -539,9 +591,10 @@ class OrchestratorEngine:
             tg_data = {
                 "issue_repo": repo,
                 "issue_number": issue,
-                "logical_issue_id": logical_issue,
+                "logical_issue_id": body["issue_id"],
                 **payload,
             }
+            lease = self.state.get_lease(issue) or self.state.get_lease()
             if lease and int(lease.get("issue_number", 0)) == int(issue):
                 l_payload = lease.get("payload", {})
                 l_task = l_payload.get("task", {})
@@ -571,8 +624,6 @@ class OrchestratorEngine:
         if not should_post:
             return 0
 
-        header = f"[{logical_issue}_{spec_event}_by{actor}]"
-        comment_body = f"{header}\n\n```orchestrator-event\n" + json.dumps(body, ensure_ascii=False, indent=2) + "\n```"
         created = self.github.comment(
             repo,
             issue,
@@ -1432,6 +1483,8 @@ class OrchestratorEngine:
         comment_id = self.event(
             issue_number,
             "ready_for_gpt_review",
+            logical_issue_id=payload.get("logical_issue_id") or (task.get("issue_id") if task else None),
+            task=task,
             pr_url=pr["html_url"],
             pr_number=pr["number"],
             pr_head_sha=head_sha,
@@ -1705,6 +1758,13 @@ class OrchestratorEngine:
         self._block(lease, f"unknown lifecycle state: {status}")
 
     def _parse_canonical_id(self, issue: dict) -> str:
+        body = issue.get("body") or ""
+        try:
+            task = parse_task(body)
+            if task.get("issue_id"):
+                return str(task["issue_id"])
+        except Exception:
+            pass
         title = issue.get("title", "")
         match = re.match(r"^\[(?P<tag>issue\d+|[A-Za-z0-9_.-]+)\]", title)
         return match.group("tag") if match else f"issue{issue.get('number', '')}"

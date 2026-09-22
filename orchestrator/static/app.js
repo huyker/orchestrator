@@ -101,14 +101,28 @@ function copyText(text, ev) {
     ev.stopPropagation();
     ev.preventDefault();
   }
+  // Loại bỏ hoàn toàn mọi ký tự xuống dòng (\r, \n) để gom thành 1 dòng duy nhất
+  const singleLineText = (text || '').replace(/[\r\n]+/g, ' ').replace(/\s+/g, ' ').trim();
+  const btn = ev && ev.target ? ev.target.closest('button') : null;
+  const originalHtml = btn ? btn.innerHTML : '';
+
   if (navigator.clipboard && navigator.clipboard.writeText) {
-    navigator.clipboard.writeText(text).then(() => {
-      alert('Đã sao chép log vào clipboard!');
+    navigator.clipboard.writeText(singleLineText).then(() => {
+      if (btn) {
+        btn.innerHTML = '✓ Đã Copy (1 Dòng)!';
+        btn.classList.add('copied');
+        setTimeout(() => {
+          btn.innerHTML = originalHtml;
+          btn.classList.remove('copied');
+        }, 2200);
+      } else {
+        alert('Đã sao chép log vào clipboard (không xuống dòng)!');
+      }
     }).catch(() => {
-      prompt('Nhấn Ctrl+C để copy log:', text);
+      prompt('Nhấn Ctrl+C để copy log (không xuống dòng):', singleLineText);
     });
   } else {
-    prompt('Nhấn Ctrl+C để copy log:', text);
+    prompt('Nhấn Ctrl+C để copy log (không xuống dòng):', singleLineText);
   }
 }
 
@@ -143,18 +157,31 @@ function formatAgyLog10(logText, issueNumber) {
     else if (line.includes('[PROMPT]')) lineCls = 'log-hl-prompt';
     else if (line.toLowerCase().includes('error') || line.toLowerCase().includes('failed') || line.toLowerCase().includes('exception')) lineCls = 'log-hl-error';
 
-    let formattedLine = esc(line);
+    // Chỉ 300 kí tự cuối cùng không xuống dòng. Nếu quá thì ....
+    const cleanLine = line.replace(/\r/g, '');
+    let displayLine = cleanLine;
+    const MAX_CHARS = 300;
+    if (displayLine.length > MAX_CHARS) {
+      displayLine = '....' + displayLine.slice(-MAX_CHARS);
+    }
+
+    let formattedLine = esc(displayLine);
     formattedLine = formattedLine.replace(/^(\[\d{4}-\d{2}-\d{2}[^\]]+\])/, '<span class="log-hl-ts">$1</span>');
 
     return `
-      <div class="log-line">
+      <div class="log-line" title="${esc(cleanLine)}">
         <span class="log-line-num">${allLines.length - lines.length + idx + 1}</span>
         <span class="log-line-content ${lineCls}">${formattedLine}</span>
       </div>
     `;
   }).join('');
 
-  const safeRaw = encodeURIComponent(lines.join('\n'));
+  // Khi bấm nút copy thì copy đầy đủ hoặc tối đa 10 dòng (Không xuống dòng)
+  const fullNoNewlines = lines
+    .map(l => l.replace(/[\r\n]+/g, ' ').trim())
+    .filter(l => l.length > 0)
+    .join(' ');
+  const safeRaw = encodeURIComponent(fullNoNewlines);
 
   return `
     <div class="agy-live-log-card">
@@ -163,7 +190,7 @@ function formatAgyLog10(logText, issueNumber) {
           <span class="live-pulse-dot"></span>
           <span class="font-mono">AGY EXECUTION LOG (10 DÒNG CUỐI)</span>
         </div>
-        <button class="btn-xs btn-copy-log" onclick="copyText(decodeURIComponent('${safeRaw}'), event)">📋 Copy 10 Dòng</button>
+        <button class="btn-xs btn-copy-log" onclick="copyText(decodeURIComponent('${safeRaw}'), event)" title="Copy tối đa 10 dòng đầy đủ không xuống dòng">📋 Copy 10 Dòng (Không xuống dòng)</button>
       </div>
       <div class="agy-log-terminal font-mono" id="agyLogBox_${issueNumber}">
         ${linesHtml}
@@ -1575,11 +1602,62 @@ function initEventListeners() {
     });
   });
 
+  // Project Config Dropdown Controls
+  const btnToggleCfg = document.getElementById('btnToggleConfigDropdown');
+  if (btnToggleCfg) {
+    btnToggleCfg.addEventListener('click', (e) => {
+      e.stopPropagation();
+      toggleConfigDropdown();
+    });
+  }
+
+  const btnToggleHero = document.getElementById('btnToggleConfigHero');
+  if (btnToggleHero) {
+    btnToggleHero.addEventListener('click', (e) => {
+      e.stopPropagation();
+      toggleConfigDropdown(true);
+      const panel = document.getElementById('projectConfigDropdown');
+      if (panel) panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  }
+
+  const btnCloseCfg = document.getElementById('btnCloseConfigDropdown');
+  if (btnCloseCfg) {
+    btnCloseCfg.addEventListener('click', (e) => {
+      e.stopPropagation();
+      toggleConfigDropdown(false);
+    });
+  }
+
   // Terminal Controls
   document.getElementById('btnClearEvents').addEventListener('click', () => {
     localEventsCleared = true;
     document.getElementById('liveTerminal').innerHTML = '<div class="term-line term-system">[SYSTEM] Đã xóa màn hình sự kiện.</div>';
   });
+}
+
+function toggleConfigDropdown(forceOpen) {
+  const panel = document.getElementById('projectConfigDropdown');
+  const btn = document.getElementById('btnToggleConfigDropdown');
+  const chevron = document.getElementById('configDropdownChevron');
+  if (!panel) return;
+
+  const isClosed = panel.style.display === 'none' || !panel.style.display;
+  const shouldOpen = forceOpen !== undefined ? forceOpen : isClosed;
+
+  if (shouldOpen) {
+    panel.style.display = 'block';
+    if (btn) btn.classList.add('active');
+    if (chevron) chevron.textContent = '▲';
+    if (lastStatus && currentDetailProjectId) {
+      const p = (lastStatus.projects || []).find(x => x.id === currentDetailProjectId);
+      if (p) renderConfigDisplay(p);
+    }
+  } else {
+    panel.style.display = 'none';
+    if (btn) btn.classList.remove('active');
+    if (chevron) chevron.textContent = '▼';
+  }
 }
 
 // Start

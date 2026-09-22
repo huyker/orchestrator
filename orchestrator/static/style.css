@@ -1119,29 +1119,152 @@ body {
   font-family: var(--font-mono);
 }
 
-/* Detail Split Layout */
+/* Detail Layout - 100% Full-Width Task & Progress Management */
 .detail-split {
-  display: grid;
-  grid-template-columns: 1.25fr 0.75fr;
-  gap: 20px;
+  display: block;
+  width: 100%;
   min-height: 600px;
 }
 
-.detail-tasks-col, .detail-config-col {
-  padding: 20px;
+.detail-tasks-col {
+  padding: 22px 24px;
   display: flex;
   flex-direction: column;
+  width: 100%;
+}
+
+.detail-config-col {
+  display: none; /* Moved to collapsible dropdown drawer */
 }
 
 .panel-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  gap: 12px;
+  gap: 16px;
   padding-bottom: 14px;
   border-bottom: 1px solid var(--border-default);
   margin-bottom: 16px;
   flex-wrap: wrap;
+}
+
+.panel-actions-group {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.btn-config-dropdown-toggle {
+  background: rgba(6, 182, 212, 0.1);
+  border: 1px solid rgba(6, 182, 212, 0.4);
+  color: #38bdf8;
+  font-size: 0.8rem;
+  font-weight: 600;
+  padding: 5px 12px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  transition: all 0.2s ease;
+}
+
+.btn-config-dropdown-toggle:hover {
+  background: rgba(6, 182, 212, 0.22);
+  border-color: #38bdf8;
+  color: #fff;
+  box-shadow: 0 0 12px rgba(6, 182, 212, 0.3);
+}
+
+.btn-config-dropdown-toggle.active {
+  background: rgba(6, 182, 212, 0.25);
+  border-color: #06b6d4;
+  color: #fff;
+  box-shadow: 0 0 10px rgba(6, 182, 212, 0.25);
+}
+
+.config-chevron {
+  font-size: 0.7rem;
+  display: inline-block;
+  transition: transform 0.2s ease;
+}
+
+.btn-config-dropdown-toggle.active .config-chevron {
+  transform: rotate(180deg);
+}
+
+/* Collapsible Dropdown Container */
+.project-config-dropdown {
+  background: #080d1a;
+  border: 1px solid rgba(6, 182, 212, 0.35);
+  border-radius: var(--radius-md);
+  padding: 18px 20px;
+  margin-bottom: 22px;
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.65), inset 0 0 20px rgba(6, 182, 212, 0.05);
+  animation: cfgSlideDown 0.25s ease-out;
+}
+
+@keyframes cfgSlideDown {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.config-dropdown-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding-bottom: 12px;
+  margin-bottom: 14px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.config-dropdown-title {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.config-icon {
+  font-size: 1.4rem;
+}
+
+.config-dropdown-title h4 {
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: #f8fafc;
+  letter-spacing: 0.5px;
+}
+
+.config-dropdown-sub {
+  margin: 2px 0 0 0;
+  font-size: 0.74rem;
+  color: var(--text-muted);
+}
+
+.btn-close-config {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--border-default);
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.btn-close-config:hover {
+  background: rgba(239, 68, 68, 0.2);
+  border-color: #ef4444;
+  color: #fca5a5;
 }
 
 .panel-title-group {
@@ -2111,19 +2234,30 @@ body {
 }
 
 .btn-copy-log {
-  background: rgba(255, 255, 255, 0.08);
-  border: 1px solid rgba(255, 255, 255, 0.15);
-  color: var(--text-secondary);
-  padding: 2px 8px;
+  background: rgba(6, 182, 212, 0.12);
+  border: 1px solid rgba(6, 182, 212, 0.35);
+  color: #38bdf8;
+  padding: 3px 10px;
   border-radius: var(--radius-sm);
   font-size: 0.72rem;
+  font-weight: 600;
   cursor: pointer;
   transition: all 0.2s;
+  white-space: nowrap;
 }
 
 .btn-copy-log:hover {
-  background: rgba(255, 255, 255, 0.18);
+  background: rgba(6, 182, 212, 0.25);
+  border-color: #38bdf8;
   color: #fff;
+  box-shadow: 0 0 10px rgba(6, 182, 212, 0.3);
+}
+
+.btn-copy-log.copied {
+  background: rgba(16, 185, 129, 0.25) !important;
+  border-color: #10b981 !important;
+  color: #34d399 !important;
+  box-shadow: 0 0 10px rgba(16, 185, 129, 0.3) !important;
 }
 
 .blocked-log-view {
@@ -2294,14 +2428,18 @@ body {
   display: flex;
   flex-direction: column;
   justify-content: flex-start;
-  gap: 2px;
+  gap: 3px;
+  min-width: 0;
 }
 
 .log-line {
-  word-break: break-all;
-  white-space: pre-wrap;
   display: flex;
-  gap: 6px;
+  align-items: baseline;
+  gap: 8px;
+  white-space: nowrap !important;
+  overflow: hidden;
+  min-width: 0;
+  width: 100%;
 }
 
 .log-line-num {
@@ -2309,10 +2447,17 @@ body {
   user-select: none;
   min-width: 18px;
   text-align: right;
+  flex-shrink: 0;
+  font-size: 10px;
 }
 
 .log-line-content {
   flex: 1;
+  min-width: 0;
+  white-space: nowrap !important;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 11px;
 }
 
 .log-hl-start { color: #34d399; font-weight: 600; }

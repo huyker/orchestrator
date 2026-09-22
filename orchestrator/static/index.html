@@ -358,6 +358,9 @@
             </div>
           </div>
           <div class="hero-right">
+            <button class="btn btn-outline" id="btnToggleConfigHero" title="Mở/Đóng Cấu Hình & Context Dự Án">
+              ⚙️ Cấu Hình & Context
+            </button>
             <a href="#" target="_blank" class="btn btn-outline" id="btnOpenGithub">
               Mở trên GitHub ↗
             </a>
@@ -388,43 +391,55 @@
           </div>
         </div>
 
-        <!-- Project Split Content: Tasks & Profiles -->
+        <!-- Project Split Content: Tasks & Profiles (Full-Width View) -->
         <div class="detail-split">
-          <!-- Tasks Column -->
+          <!-- Tasks Column (Full-Width) -->
           <div class="detail-tasks-col card">
             <div class="panel-header">
               <div class="panel-title-group">
                 <h3>DANH SÁCH TASKS & TIẾN ĐỘ</h3>
                 <span class="count-pill" id="detailTaskFilterCount">0 tasks</span>
               </div>
-              <div class="task-filters">
-                <button class="filter-btn active" data-filter="all">Tất cả</button>
-                <button class="filter-btn" data-filter="ready">Chờ xử lý</button>
-                <button class="filter-btn" data-filter="waiting">Chờ Phụ Thuộc</button>
-                <button class="filter-btn" data-filter="in_progress">Đang làm</button>
-                <button class="filter-btn" data-filter="review">Review</button>
-                <button class="filter-btn" data-filter="done">Xong</button>
+              <div class="panel-actions-group">
+                <button class="btn-config-dropdown-toggle" id="btnToggleConfigDropdown" title="Bấm để mở/đóng Cấu hình & Context dự án">
+                  ⚙️ Cấu Hình & Context <span class="config-chevron" id="configDropdownChevron">▼</span>
+                </button>
+                <div class="task-filters">
+                  <button class="filter-btn active" data-filter="all">Tất cả</button>
+                  <button class="filter-btn" data-filter="ready">Chờ xử lý</button>
+                  <button class="filter-btn" data-filter="waiting">Chờ Phụ Thuộc</button>
+                  <button class="filter-btn" data-filter="in_progress">Đang làm</button>
+                  <button class="filter-btn" data-filter="review">Review</button>
+                  <button class="filter-btn" data-filter="done">Xong</button>
+                </div>
+              </div>
+            </div>
+
+            <!-- Collapsible Dropdown: Configuration & Context -->
+            <div id="projectConfigDropdown" class="project-config-dropdown" style="display: none;">
+              <div class="config-dropdown-header">
+                <div class="config-dropdown-title">
+                  <span class="config-icon">⚙️</span>
+                  <div>
+                    <h4>CẤU HÌNH & CONTEXT DỰ ÁN</h4>
+                    <p class="config-dropdown-sub">Tùy biến Model, Task Profiles, Kế hoạch & Raw Manifest của dự án</p>
+                  </div>
+                </div>
+                <button class="btn-close-config" id="btnCloseConfigDropdown" title="Đóng bảng cấu hình">✕ Đóng</button>
+              </div>
+              <div class="config-tabs-nav">
+                <button class="cfg-tab active" data-cfg="agents">Agent Profiles</button>
+                <button class="cfg-tab" data-cfg="tasks">Task Profiles</button>
+                <button class="cfg-tab" data-cfg="plans">Kế Hoạch (Plans)</button>
+                <button class="cfg-tab" data-cfg="raw">Raw Manifest</button>
+              </div>
+              <div class="config-content" id="configContent">
+                <pre id="configDisplay">Đang tải cấu hình…</pre>
               </div>
             </div>
 
             <div id="detailTaskList" class="detail-task-list">
               <div class="placeholder-msg">Đang tải danh sách tasks của dự án…</div>
-            </div>
-          </div>
-
-          <!-- Configuration & Manifest Column -->
-          <div class="detail-config-col card">
-            <div class="panel-header">
-              <h3>CẤU HÌNH & CONTEXT DỰ ÁN</h3>
-            </div>
-            <div class="config-tabs-nav">
-              <button class="cfg-tab active" data-cfg="agents">Agent Profiles</button>
-              <button class="cfg-tab" data-cfg="tasks">Task Profiles</button>
-              <button class="cfg-tab" data-cfg="plans">Kế Hoạch (Plans)</button>
-              <button class="cfg-tab" data-cfg="raw">Raw Manifest</button>
-            </div>
-            <div class="config-content" id="configContent">
-              <pre id="configDisplay">Đang tải cấu hình…</pre>
             </div>
           </div>
         </div>
