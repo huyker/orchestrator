@@ -37,6 +37,7 @@ from .models import (
 )
 from .project import Registry, default_project_id, github_repo_from_source, load_catalog, resolve_profiles, safe_path
 from .state import StateStore
+from .telegram import TelegramNotifier
 from .workspace import WorkspaceManager
 
 
@@ -59,7 +60,7 @@ DEFAULT_AGY_MODELS: list[dict[str, Any]] = [
 
 
 class OrchestratorEngine:
-    def __init__(self, settings: Settings):
+    def __init__(self, settings: Settings, telegram_config: Path | str | None = None):
         self.settings = settings
         self.instance_id = str(uuid.uuid4())
         self.github = GitHubClient(settings.token)
@@ -67,6 +68,8 @@ class OrchestratorEngine:
         self.state = StateStore(settings.runtime_dir / "state.sqlite3")
         self.workspace = WorkspaceManager(settings)
         self.graphify = GraphifyAdapter()
+        tg_file = telegram_config or Path("telegram_config.json")
+        self.telegram = TelegramNotifier(config_file=tg_file)
         self._tick_lock = threading.Lock()
         self._sync_lock = threading.Lock()
         self._models_lock = threading.Lock()
@@ -285,11 +288,11 @@ class OrchestratorEngine:
             "already_registered": False,
         }
 
-    def _commit_registry_change(self, message: str) -> None:
-        reg_file = self.settings.registry_file.resolve()
-        if not reg_file.is_file():
-            return
-        repo_dir = reg_file.parent
+    def _commit_file_change(self, file_path: Path | str, message: str) -> bool:
+        p = Path(file_path).resolve()
+        if not p.is_file():
+            return False
+        repo_dir = p.parent
         try:
             inside = subprocess.run(
                 ["git", "rev-parse", "--is-inside-work-tree"],
@@ -299,34 +302,82 @@ class OrchestratorEngine:
                 timeout=5,
             )
             if inside.returncode != 0 or inside.stdout.strip() != "true":
-                return
-            subprocess.run(
-                ["git", "add", str(reg_file.name)],
+                return False
+            top_proc = subprocess.run(
+                ["git", "rev-parse", "--show-toplevel"],
                 cwd=repo_dir,
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if top_proc.returncode != 0:
+                return False
+            git_root = Path(top_proc.stdout.strip())
+            try:
+                rel_name = str(p.relative_to(git_root))
+            except ValueError:
+                return False
+            subprocess.run(
+                ["git", "add", rel_name],
+                cwd=git_root,
                 capture_output=True,
                 timeout=10,
             )
             diff_proc = subprocess.run(
                 ["git", "diff", "--cached", "--quiet"],
-                cwd=repo_dir,
+                cwd=git_root,
                 capture_output=True,
                 timeout=10,
             )
             if diff_proc.returncode != 0:
                 subprocess.run(
                     ["git", "commit", "-m", message],
-                    cwd=repo_dir,
+                    cwd=git_root,
                     capture_output=True,
                     timeout=15,
                 )
                 subprocess.run(
                     ["git", "push", "origin", "main"],
-                    cwd=repo_dir,
+                    cwd=git_root,
                     capture_output=True,
                     timeout=30,
                 )
+            return True
         except Exception:
-            pass
+            return False
+
+    def _commit_registry_change(self, message: str) -> None:
+        self._commit_file_change(self.settings.registry_file, message)
+
+    def save_telegram_config(
+        self,
+        *,
+        bot_token: str | None = None,
+        chat_id: str | None = None,
+        enabled: bool | None = None,
+        topic_id: str | None = None,
+    ) -> dict[str, Any]:
+        cfg = self.telegram.save_config(
+            bot_token=bot_token,
+            chat_id=chat_id,
+            enabled=enabled,
+            topic_id=topic_id,
+        )
+        self._commit_file_change(self.telegram.config_file, "chore: update telegram notification settings")
+        return cfg
+
+    def test_telegram(
+        self,
+        *,
+        bot_token: str | None = None,
+        chat_id: str | None = None,
+        topic_id: str | None = None,
+    ) -> tuple[bool, str]:
+        return self.telegram.test_connection(
+            bot_token=bot_token,
+            chat_id=chat_id,
+            topic_id=topic_id,
+        )
 
     def remove_managed_project(self, project_id: str) -> dict[str, Any]:
         self.registry = Registry(self.settings.registry_file)
@@ -480,6 +531,29 @@ class OrchestratorEngine:
             **payload,
         }
         self.state.add_event(event_type, {"issue_repo": repo, "issue_number": issue, **payload})
+
+        # Telegram notification
+        try:
+            tg_data = {
+                "issue_repo": repo,
+                "issue_number": issue,
+                "logical_issue_id": logical_issue,
+                **payload,
+            }
+            if lease and int(lease.get("issue_number", 0)) == int(issue):
+                l_payload = lease.get("payload", {})
+                l_task = l_payload.get("task", {})
+                if not tg_data.get("task_id"):
+                    tg_data["task_id"] = l_task.get("task_id") or l_payload.get("task_id")
+                if not tg_data.get("title"):
+                    tg_data["title"] = l_task.get("title") or l_payload.get("title")
+                if not tg_data.get("branch"):
+                    tg_data["branch"] = l_payload.get("branch")
+                if not tg_data.get("executor"):
+                    tg_data["executor"] = l_payload.get("executor")
+            self.telegram.send_event_async(event_type, tg_data)
+        except Exception:
+            pass
 
         # Only post comments to GitHub Issue when code is ready/submitted or user interaction is needed.
         # Local execution failures (blocked), internal acceptance/review rework cycles remain local-only.
@@ -2015,6 +2089,7 @@ class OrchestratorEngine:
                 "model": self.get_agy_model(),
                 "available_models": self.get_available_agy_models(),
             },
+            "telegram": self.telegram.get_config(masked=False),
             "self_update": self.self_update_status(),
             "system": {
                 "managed_root": str(self.settings.workspace_root),
@@ -2062,6 +2137,16 @@ class OrchestratorEngine:
         payload.pop("transient_retry_count", None)
         self.state.update_lease(self.instance_id, status="REWORK", payload=payload, issue_number=target_num)
         self.state.add_event("retry_requested_from_dashboard", {"issue_number": target_num})
+        try:
+            repo = self._issue_repo(target_num, payload.get("issue_repo"))
+            self.telegram.send_event_async("retry_requested", {
+                "issue_number": target_num,
+                "issue_repo": repo,
+                "task_id": payload.get("task_id"),
+                "title": payload.get("title"),
+            })
+        except Exception:
+            pass
         if self._github_auth.get("connected"):
             try:
                 self.set_label(target_num, LABEL_REWORK)

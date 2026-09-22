@@ -70,6 +70,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 "available": self.engine.get_available_agy_models(),
             })
             return
+        if route == "/api/telegram/config":
+            self._json({
+                "ok": True,
+                "config": self.engine.telegram.get_config(masked=False),
+            })
+            return
         match = re.match(r"^/api/tasks/(\d+)/log(?:[.]txt)?$", route)
         if match:
             issue_num = int(match.group(1))
@@ -262,6 +268,27 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     except Exception:
                         pass
                 self._json({"ok": True, "auth": auth_result, "saved_to_git": True})
+                return
+
+            if route == "/api/telegram/config":
+                payload = self._read_json()
+                cfg = self.engine.save_telegram_config(
+                    bot_token=payload.get("bot_token"),
+                    chat_id=payload.get("chat_id"),
+                    enabled=payload.get("enabled"),
+                    topic_id=payload.get("topic_id"),
+                )
+                self._json({"ok": True, "config": cfg, "saved_to_git": True})
+                return
+
+            if route == "/api/telegram/test":
+                payload = self._read_json()
+                ok, msg = self.engine.test_telegram(
+                    bot_token=payload.get("bot_token"),
+                    chat_id=payload.get("chat_id"),
+                    topic_id=payload.get("topic_id"),
+                )
+                self._json({"ok": ok, "message": msg})
                 return
 
             prefix = "/api/projects/"

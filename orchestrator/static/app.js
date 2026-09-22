@@ -1168,6 +1168,9 @@ async function refresh() {
     // Sync AGY Model Config
     syncAgyModelUI(s);
 
+    // Sync Telegram UI
+    syncTelegramUI(s);
+
     if (s.issues_error && !String(s.issues_error).includes('GitHub not connected')) {
       showBlock(s.issues_error);
     }
@@ -1249,6 +1252,195 @@ window.onAgentModelChange = async function(selectEl, agentId) {
     showBlock(`Lỗi cấu hình Model cho Agent ${agentId}: ${err.message}`);
   }
 };
+
+// ================= TELEGRAM NOTIFICATIONS & CONFIG =================
+function syncTelegramUI(s) {
+  const tg = s?.telegram || {};
+  const tgBadge = document.getElementById('telegramBadge');
+  if (tgBadge) {
+    if (tg.enabled && tg.configured) {
+      tgBadge.className = 'status-pill';
+      tgBadge.innerHTML = '<span class="status-dot"></span> Telegram: Đang bật';
+      tgBadge.title = 'Thông báo Telegram đang hoạt động (gửi realtime mọi sự kiện)';
+    } else if (tg.configured) {
+      tgBadge.className = 'status-pill offline';
+      tgBadge.innerHTML = '<span class="status-dot"></span> Telegram: Tạm tắt';
+      tgBadge.title = 'Đã cấu hình Telegram nhưng thông báo đang tắt';
+    } else {
+      tgBadge.className = 'status-pill offline';
+      tgBadge.innerHTML = '<span class="status-dot"></span> Telegram: Chưa bật';
+      tgBadge.title = 'Chưa cấu hình Bot Token hoặc Chat ID';
+    }
+  }
+
+  const inputToken = document.getElementById('inputTelegramBotToken');
+  const inputChatId = document.getElementById('inputTelegramChatId');
+  const inputTopicId = document.getElementById('inputTelegramTopicId');
+  const toggleEnabled = document.getElementById('toggleTelegramEnabled');
+  const indicator = document.getElementById('telegramStateIndicator');
+  const stateText = document.getElementById('telegramStateText');
+
+  if (toggleEnabled && document.activeElement !== toggleEnabled) {
+    toggleEnabled.checked = !!tg.enabled;
+  }
+  if (indicator && stateText) {
+    if (tg.enabled) {
+      indicator.classList.add('active');
+      stateText.textContent = tg.configured ? 'Đang bật (Hoạt động)' : 'Đang bật (Chưa đủ thông tin)';
+    } else {
+      indicator.classList.remove('active');
+      stateText.textContent = 'Đang tắt';
+    }
+  }
+
+  if (inputToken && document.activeElement !== inputToken && !inputToken.dataset.userEdited) {
+    if (tg.bot_token) inputToken.value = tg.bot_token;
+  }
+  if (inputChatId && document.activeElement !== inputChatId && !inputChatId.dataset.userEdited) {
+    if (tg.chat_id) inputChatId.value = tg.chat_id;
+  }
+  if (inputTopicId && document.activeElement !== inputTopicId && !inputTopicId.dataset.userEdited) {
+    if (tg.topic_id) inputTopicId.value = tg.topic_id;
+  }
+}
+
+window.toggleTelegramTokenVisibility = function() {
+  const input = document.getElementById('inputTelegramBotToken');
+  const btn = document.getElementById('btnToggleTokenVisible');
+  if (!input || !btn) return;
+  if (input.type === 'password') {
+    input.type = 'text';
+    btn.textContent = '🙈';
+    btn.title = 'Ẩn Token';
+  } else {
+    input.type = 'password';
+    btn.textContent = '👁';
+    btn.title = 'Hiện Token';
+  }
+};
+
+window.onTelegramToggleChange = function() {
+  const toggle = document.getElementById('toggleTelegramEnabled');
+  const indicator = document.getElementById('telegramStateIndicator');
+  const stateText = document.getElementById('telegramStateText');
+  if (!toggle || !indicator || !stateText) return;
+  if (toggle.checked) {
+    indicator.classList.add('active');
+    stateText.textContent = 'Sẽ bật (Bấm Lưu & Đồng Bộ Git)';
+  } else {
+    indicator.classList.remove('active');
+    stateText.textContent = 'Sẽ tắt (Bấm Lưu & Đồng Bộ Git)';
+  }
+};
+
+function showTelegramFeedback(msg, isSuccess = true) {
+  const box = document.getElementById('telegramFeedbackBox');
+  const text = document.getElementById('telegramFeedbackText');
+  const icon = document.getElementById('telegramFeedbackIcon');
+  if (!box || !text || !icon) return;
+  box.className = `telegram-feedback-box ${isSuccess ? 'success' : 'error'}`;
+  icon.textContent = isSuccess ? '✅' : '❌';
+  text.textContent = msg;
+  box.classList.remove('hidden');
+}
+
+window.saveTelegramConfig = async function() {
+  const inputToken = document.getElementById('inputTelegramBotToken');
+  const inputChatId = document.getElementById('inputTelegramChatId');
+  const inputTopicId = document.getElementById('inputTelegramTopicId');
+  const toggle = document.getElementById('toggleTelegramEnabled');
+  const btn = document.getElementById('btnSaveTelegram');
+
+  const bot_token = (inputToken?.value || '').trim();
+  const chat_id = (inputChatId?.value || '').trim();
+  const topic_id = (inputTopicId?.value || '').trim();
+  const enabled = !!toggle?.checked;
+
+  if (enabled && (!bot_token || !chat_id)) {
+    showTelegramFeedback('Vui lòng điền Bot Token và Chat ID trước khi bật thông báo!', false);
+    return;
+  }
+
+  const originalText = btn ? btn.innerHTML : '';
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = '<span class="btn-icon">⏳</span> Đang Lưu & Commit Git...';
+  }
+
+  try {
+    const res = await api('/api/telegram/config', {
+      method: 'POST',
+      body: JSON.stringify({ bot_token, chat_id, topic_id, enabled }),
+    });
+    if (res.ok) {
+      showTelegramFeedback('✓ Đã lưu cấu hình và tự động commit/push vào file telegram_config.json trên Git thành công!', true);
+      if (inputToken) delete inputToken.dataset.userEdited;
+      if (inputChatId) delete inputChatId.dataset.userEdited;
+      if (inputTopicId) delete inputTopicId.dataset.userEdited;
+      await refresh();
+    } else {
+      showTelegramFeedback(`Lỗi lưu cấu hình: ${res.error || 'Thất bại'}`, false);
+    }
+  } catch (err) {
+    showTelegramFeedback(`Lỗi kết nối API: ${err.message}`, false);
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = originalText;
+    }
+  }
+};
+
+window.testTelegramNotification = async function() {
+  const inputToken = document.getElementById('inputTelegramBotToken');
+  const inputChatId = document.getElementById('inputTelegramChatId');
+  const inputTopicId = document.getElementById('inputTelegramTopicId');
+  const btn = document.getElementById('btnTestTelegram');
+
+  const bot_token = (inputToken?.value || '').trim();
+  const chat_id = (inputChatId?.value || '').trim();
+  const topic_id = (inputTopicId?.value || '').trim();
+
+  if (!bot_token || !chat_id) {
+    showTelegramFeedback('Vui lòng nhập Bot Token và Chat ID để gửi thử tin nhắn!', false);
+    return;
+  }
+
+  const originalText = btn ? btn.innerHTML : '';
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = '<span class="btn-icon">⏳</span> Đang gửi...';
+  }
+
+  try {
+    const res = await api('/api/telegram/test', {
+      method: 'POST',
+      body: JSON.stringify({ bot_token, chat_id, topic_id }),
+    });
+    if (res.ok) {
+      showTelegramFeedback('✓ Đã gửi tin nhắn thử nghiệm thành công! Hãy kiểm tra bot và group Telegram của bạn.', true);
+    } else {
+      showTelegramFeedback(`Gửi tin nhắn thử thất bại: ${res.message || 'Lỗi Telegram API'}`, false);
+    }
+  } catch (err) {
+    showTelegramFeedback(`Lỗi gửi tin nhắn: ${err.message}`, false);
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = originalText;
+    }
+  }
+};
+
+// Track user typing on telegram inputs to prevent overwrite during polling
+document.addEventListener('DOMContentLoaded', () => {
+  ['inputTelegramBotToken', 'inputTelegramChatId', 'inputTelegramTopicId'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) {
+      el.addEventListener('input', () => { el.dataset.userEdited = '1'; });
+    }
+  });
+});
 
 function updateInputCounter() {
   const val = document.getElementById('importInput').value.trim();

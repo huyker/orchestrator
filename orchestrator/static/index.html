@@ -57,6 +57,9 @@
         <div class="status-pill" id="githubBadge">
           <span class="status-dot"></span> GitHub: Kiểm tra…
         </div>
+        <div class="status-pill" id="telegramBadge" title="Trạng thái thông báo Telegram (Realtime & Git Sync)">
+          <span class="status-dot"></span> Telegram: Kiểm tra…
+        </div>
         <div class="status-pill" id="modeBadge">
           <span class="status-dot"></span> Engine: Tự động
         </div>
@@ -157,6 +160,86 @@
               <div id="modelConfigStatus" class="model-config-status">
                 <span class="status-dot"></span> Đang áp dụng: <strong id="currentAgyModelLabel" class="highlight-cyan font-mono">gemini-3.8-flash-high</strong>
               </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- Section Cấu Hình Thông Báo Telegram -->
+        <section class="telegram-config-section card">
+          <div class="telegram-config-inner">
+            <div class="telegram-config-header">
+              <div class="telegram-title-group">
+                <div class="section-badge cyan">THÔNG BÁO TELEGRAM (GIT PERSISTENT)</div>
+                <h2 class="telegram-config-title">📢 Telegram Bot & Thông Báo Tự Động (Auto Git Sync)</h2>
+                <p class="section-desc">
+                  Tự động gửi thông báo tức thì lên Telegram cho mọi action đang diễn ra: <b>tiếp nhận xử lý task mới</b>, <b>cập nhật tiến độ</b>, <b>đã gửi task đổi trạng thái lên Issue cho GPT kiểm tra</b>, <b>task blocked</b>, hoặc <b>kích hoạt retry</b>. Toàn bộ thông tin được lưu lại trên Git (<code>telegram_config.json</code>).
+                </p>
+              </div>
+              <div class="telegram-git-status-badge font-mono" id="telegramGitStatusBadge">
+                Git: telegram_config.json
+              </div>
+            </div>
+
+            <div class="telegram-form-grid">
+              <div class="telegram-field-col">
+                <label for="inputTelegramBotToken" class="telegram-label">
+                  <span>🤖 Telegram Bot Token:</span>
+                  <a href="https://t.me/BotFather" target="_blank" rel="noopener" class="tg-hint-link">Lấy từ @BotFather ↗</a>
+                </label>
+                <div class="telegram-input-wrap">
+                  <input type="password" id="inputTelegramBotToken" class="telegram-input font-mono" placeholder="Ví dụ: 123456789:AAHk..." autocomplete="off">
+                  <button type="button" class="btn-toggle-pwd" id="btnToggleTokenVisible" title="Hiện/Ẩn Token" onclick="toggleTelegramTokenVisibility()">👁</button>
+                </div>
+              </div>
+
+              <div class="telegram-field-col">
+                <label for="inputTelegramChatId" class="telegram-label">
+                  <span>👥 Chat ID / Group ID:</span>
+                  <span class="tg-hint-text">ID nhóm (-100...) hoặc cá nhân</span>
+                </label>
+                <div class="telegram-input-wrap">
+                  <input type="text" id="inputTelegramChatId" class="telegram-input font-mono" placeholder="Ví dụ: -1001234567890 hoặc 987654321">
+                </div>
+              </div>
+
+              <div class="telegram-field-col">
+                <label for="inputTelegramTopicId" class="telegram-label">
+                  <span>🧵 Topic / Thread ID (Tùy chọn):</span>
+                  <span class="tg-hint-text">Topic ID nếu nhóm dùng Forum</span>
+                </label>
+                <div class="telegram-input-wrap">
+                  <input type="text" id="inputTelegramTopicId" class="telegram-input font-mono" placeholder="Để trống nếu là chat thường">
+                </div>
+              </div>
+            </div>
+
+            <div class="telegram-actions-bar">
+              <div class="telegram-toggle-group">
+                <label class="toggle-switch-label">
+                  <input type="checkbox" id="toggleTelegramEnabled" class="toggle-switch-input" onchange="onTelegramToggleChange()">
+                  <span class="toggle-switch-slider"></span>
+                  <span class="toggle-label-text">Bật Gửi Thông Báo Tự Động</span>
+                </label>
+                <span class="telegram-state-indicator" id="telegramStateIndicator">
+                  <span class="status-dot"></span> <span id="telegramStateText">Đang tắt</span>
+                </span>
+              </div>
+
+              <div class="telegram-btns-group">
+                <button type="button" class="btn btn-secondary" id="btnTestTelegram" onclick="testTelegramNotification()">
+                  <span class="btn-icon">📨</span> Gửi Thử Tin Nhắn
+                </button>
+                <button type="button" class="btn btn-primary btn-glow" id="btnSaveTelegram" onclick="saveTelegramConfig()">
+                  <span class="btn-icon">💾</span> Lưu & Đồng Bộ Git
+                </button>
+              </div>
+            </div>
+
+            <!-- Feedback banner for test or save -->
+            <div id="telegramFeedbackBox" class="telegram-feedback-box hidden">
+              <span id="telegramFeedbackIcon">ℹ️</span>
+              <span id="telegramFeedbackText"></span>
+              <button type="button" class="btn-xs" onclick="document.getElementById('telegramFeedbackBox').classList.add('hidden')">&times;</button>
             </div>
           </div>
         </section>
