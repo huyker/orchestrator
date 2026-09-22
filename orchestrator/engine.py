@@ -277,12 +277,56 @@ class OrchestratorEngine:
             "repo": entry["repo"],
             "managed_path": str(root),
         })
+        self._commit_registry_change(f"feat(registry): register project {entry['repo']}")
         return {
             **entry,
             "managed_path": str(root),
             "repo_info": info,
             "already_registered": False,
         }
+
+    def _commit_registry_change(self, message: str) -> None:
+        reg_file = self.settings.registry_file.resolve()
+        if not reg_file.is_file():
+            return
+        repo_dir = reg_file.parent
+        try:
+            inside = subprocess.run(
+                ["git", "rev-parse", "--is-inside-work-tree"],
+                cwd=repo_dir,
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if inside.returncode != 0 or inside.stdout.strip() != "true":
+                return
+            subprocess.run(
+                ["git", "add", str(reg_file.name)],
+                cwd=repo_dir,
+                capture_output=True,
+                timeout=10,
+            )
+            diff_proc = subprocess.run(
+                ["git", "diff", "--cached", "--quiet"],
+                cwd=repo_dir,
+                capture_output=True,
+                timeout=10,
+            )
+            if diff_proc.returncode != 0:
+                subprocess.run(
+                    ["git", "commit", "-m", message],
+                    cwd=repo_dir,
+                    capture_output=True,
+                    timeout=15,
+                )
+                subprocess.run(
+                    ["git", "push", "origin", "main"],
+                    cwd=repo_dir,
+                    capture_output=True,
+                    timeout=30,
+                )
+        except Exception:
+            pass
 
     def remove_managed_project(self, project_id: str) -> dict[str, Any]:
         self.registry = Registry(self.settings.registry_file)
@@ -291,6 +335,7 @@ class OrchestratorEngine:
             "project": removed.get("id"),
             "repo": removed.get("repo"),
         })
+        self._commit_registry_change(f"chore(registry): remove project {project_id}")
         return removed
 
     def sync_single_project(self, project_id: str) -> dict[str, Any]:

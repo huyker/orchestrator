@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 from unittest.mock import MagicMock
 
 from orchestrator.engine import OrchestratorEngine
@@ -272,8 +274,56 @@ class TestStartupReconciliation(unittest.TestCase):
             snap2 = engine.snapshot()
             self.assertEqual(snap2["auto_sync"]["last_sync_datetime"], engine._last_sync_datetime)
 
+    def test_token_persistence_and_git_config(self):
+        from orchestrator.github_client import GitHubClient
+        client = GitHubClient("")
+        with mock.patch("subprocess.run") as mock_run:
+            # Test fallback to git config
+            mock_proc = mock.MagicMock(returncode=0, stdout="git_token_12345\n")
+            mock_run.return_value = mock_proc
+            token = client._get_token()
+            self.assertEqual(token, "git_token_12345")
+
+    def test_commit_registry_change(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            subprocess.run(["git", "init"], cwd=root, check=True, capture_output=True)
+            subprocess.run(["git", "checkout", "-b", "main"], cwd=root, check=True, capture_output=True)
+            subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=root, check=True)
+            subprocess.run(["git", "config", "user.name", "tester"], cwd=root, check=True)
+
+            reg_path = root / "projects.json"
+            reg_path.write_text(json.dumps({"schema_version": 1, "projects": []}), encoding="utf-8")
+            subprocess.run(["git", "add", "projects.json"], cwd=root, check=True)
+            subprocess.run(["git", "commit", "-m", "init registry"], cwd=root, check=True, capture_output=True)
+
+            settings = Settings(
+                control_repo="",
+                token="",
+                registry_file=reg_path,
+                runtime_dir=root / "runtime",
+                workspace_root=root / "workspace",
+                poll_interval=5,
+                git_transport="https",
+                agy_bin="mock-agy",
+                agent_effort="low",
+                agent_timeout=30,
+                test_timeout=30,
+                lease_timeout=180,
+                dashboard_host="127.0.0.1",
+                dashboard_port=0,
+                allowed_authors=("test-user",),
+                max_workers=2,
+            )
+            engine = OrchestratorEngine(settings)
+            reg_path.write_text(json.dumps({"schema_version": 1, "projects": [{"id": "p1"}]}), encoding="utf-8")
+            engine._commit_registry_change("update test")
+            log = subprocess.run(["git", "log", "-n", "1", "--oneline"], cwd=root, capture_output=True, text=True)
+            self.assertIn("update test", log.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()
+
 
 

@@ -54,7 +54,7 @@ async function saveGithubToken() {
     });
     if (res.ok && res.auth?.connected) {
       document.getElementById('githubAuthBanner')?.classList.add('hidden');
-      alert(`Đã kết nối GitHub thành công! Tài khoản: ${res.auth.login}`);
+      alert(`Đã kết nối GitHub thành công và lưu thông tin vào Git credentials để tự động sử dụng cho các lần sau! Tài khoản: ${res.auth.login}`);
       await refresh();
     } else {
       alert(`Kết nối thất bại: ${res.auth?.error || 'Token không hợp lệ'}`);

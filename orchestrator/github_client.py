@@ -17,7 +17,57 @@ class GitHubClient:
 
     def _get_token(self) -> str:
         import os
-        return (self.token or os.getenv("GITHUB_TOKEN") or os.getenv("GH_TOKEN") or "").strip()
+        token = (self.token or os.getenv("GITHUB_TOKEN") or os.getenv("GH_TOKEN") or "").strip()
+        if token:
+            return token
+
+        # 1. Fallback to git config github.token
+        try:
+            proc = subprocess.run(
+                ["git", "config", "--get", "github.token"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if proc.returncode == 0 and proc.stdout.strip():
+                return proc.stdout.strip()
+        except Exception:
+            pass
+
+        # 2. Fallback to git credential helper
+        try:
+            proc = subprocess.run(
+                ["git", "credential", "fill"],
+                input="protocol=https\nhost=github.com\n\n",
+                capture_output=True,
+                text=True,
+                timeout=5,
+                env=dict(os.environ, GIT_TERMINAL_PROMPT="0"),
+            )
+            if proc.returncode == 0 and proc.stdout:
+                for line in proc.stdout.splitlines():
+                    if line.startswith("password="):
+                        val = line.split("=", 1)[1].strip()
+                        if val:
+                            return val
+        except Exception:
+            pass
+
+        # 3. Fallback to gh auth token
+        if shutil.which("gh"):
+            try:
+                proc = subprocess.run(
+                    ["gh", "auth", "token"],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                )
+                if proc.returncode == 0 and proc.stdout.strip():
+                    return proc.stdout.strip()
+            except Exception:
+                pass
+
+        return ""
 
     def auth_status(self) -> dict[str, Any]:
         token = self._get_token()

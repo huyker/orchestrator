@@ -3,7 +3,8 @@ from __future__ import annotations
 import json
 import os
 import re
-
+import shutil
+import subprocess
 import threading
 import urllib.request
 from http import HTTPStatus
@@ -198,12 +199,49 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 env_file.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
 
                 auth_result = self.engine.refresh_github_auth()
+
+                # Save token into Git configuration and Git credential store for future use
+                login = str(auth_result.get("login") or "git").strip()
+                try:
+                    subprocess.run(
+                        ["git", "config", "--global", "github.token", token],
+                        capture_output=True,
+                        timeout=5,
+                    )
+                except Exception:
+                    pass
+
+                try:
+                    cred_payload = f"protocol=https\nhost=github.com\nusername={login}\npassword={token}\n\n"
+                    subprocess.run(
+                        ["git", "credential", "approve"],
+                        input=cred_payload,
+                        text=True,
+                        capture_output=True,
+                        timeout=5,
+                        env=dict(os.environ, GIT_TERMINAL_PROMPT="0"),
+                    )
+                except Exception:
+                    pass
+
+                if shutil.which("gh"):
+                    try:
+                        subprocess.run(
+                            ["gh", "auth", "login", "--with-token"],
+                            input=f"{token}\n",
+                            text=True,
+                            capture_output=True,
+                            timeout=10,
+                        )
+                    except Exception:
+                        pass
+
                 if auth_result.get("connected"):
                     try:
                         self.engine.reconcile_startup_state()
                     except Exception:
                         pass
-                self._json({"ok": True, "auth": auth_result})
+                self._json({"ok": True, "auth": auth_result, "saved_to_git": True})
                 return
 
             prefix = "/api/projects/"
