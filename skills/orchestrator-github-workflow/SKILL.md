@@ -54,6 +54,48 @@ Never create a new Issue merely to represent:
 
 Create a new Issue only for genuinely new/out-of-scope work.
 
+## Game production task sizing
+
+For game-development projects, default to **production epics**, not micro-tasks.
+
+A production epic is one canonical Issue that owns a complete player-visible milestone end-to-end, including its internal research, design, implementation, tuning, testing, rework and independent review.
+
+Examples of good epic boundaries:
+
+- Gameplay Alpha: game boots -> full loop playable -> research -> self-play -> balance -> qualitative playthrough gate.
+- Production Presentation: approved concepts -> complete assets/VFX/UI/audio -> integration -> visual QA.
+- Release Candidate: stress/performance -> E2E -> soak -> deterministic verification -> compliance -> release lock.
+
+Do **not** create separate Issues merely for normal substeps such as:
+
+- research for an already-defined milestone;
+- one balancing pass;
+- self-play harness;
+- a tuning iteration;
+- smoke tests;
+- soak tests;
+- ordinary QA;
+- one asset family when all asset families belong to the same approved production milestone;
+- an in-scope fix or review finding.
+
+Keep those as internal phases/workstreams of the same Epic and reuse the same Issue/branch/PR through rework.
+
+Create a separate Issue only when at least one is true:
+
+1. it is a distinct player-visible/product milestone with its own acceptance gate;
+2. it must wait on a separate explicit user approval gate;
+3. it must run independently in parallel and sharing one branch/PR would create substantial conflict or risk;
+4. it is genuinely out of scope for the current milestone.
+
+For substantial game epics, the task contract SHOULD include:
+
+- `agent_workstreams`: producer, research/design, engineering, QA, balance/self-play, critic/reviewer roles as appropriate;
+- `execution_phases`: ordered internal phases and gates;
+- milestone-level `acceptance` criteria;
+- evidence requirements that judge the actual player experience, not only unit-test pass counts.
+
+Prefer 3-5 large active/future epics over 10-20 small Issues. The Orchestrator exists to keep long-running milestones moving, not to maximize Issue count.
+
 ## Managed-project discovery
 
 Read `projects.json` from `huyker/orchestrator`.
