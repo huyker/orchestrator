@@ -20,40 +20,10 @@ class GitHubClient:
         token = (self.token or os.getenv("GITHUB_TOKEN") or os.getenv("GH_TOKEN") or "").strip()
         if token:
             return token
+        if hasattr(self, "_cached_token") and self._cached_token:
+            return self._cached_token
 
-        # 1. Fallback to git config github.token
-        try:
-            proc = subprocess.run(
-                ["git", "config", "--get", "github.token"],
-                capture_output=True,
-                text=True,
-                timeout=5,
-            )
-            if proc.returncode == 0 and proc.stdout.strip():
-                return proc.stdout.strip()
-        except Exception:
-            pass
-
-        # 2. Fallback to git credential helper
-        try:
-            proc = subprocess.run(
-                ["git", "credential", "fill"],
-                input="protocol=https\nhost=github.com\n\n",
-                capture_output=True,
-                text=True,
-                timeout=5,
-                env=dict(os.environ, GIT_TERMINAL_PROMPT="0"),
-            )
-            if proc.returncode == 0 and proc.stdout:
-                for line in proc.stdout.splitlines():
-                    if line.startswith("password="):
-                        val = line.split("=", 1)[1].strip()
-                        if val:
-                            return val
-        except Exception:
-            pass
-
-        # 3. Fallback to gh auth token
+        # 1. Fallback to gh auth token first (fast and reliable)
         if shutil.which("gh"):
             try:
                 proc = subprocess.run(
@@ -63,14 +33,49 @@ class GitHubClient:
                     timeout=5,
                 )
                 if proc.returncode == 0 and proc.stdout.strip():
-                    return proc.stdout.strip()
+                    self._cached_token = proc.stdout.strip()
+                    return self._cached_token
             except Exception:
                 pass
+
+        # 2. Fallback to git config github.token
+        try:
+            proc = subprocess.run(
+                ["git", "config", "--get", "github.token"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if proc.returncode == 0 and proc.stdout.strip():
+                self._cached_token = proc.stdout.strip()
+                return self._cached_token
+        except Exception:
+            pass
+
+        # 3. Fallback to git credential helper (strictly non-interactive)
+        try:
+            env = dict(os.environ, GIT_TERMINAL_PROMPT="0", GCM_INTERACTIVE="never", GIT_ASKPASS="")
+            proc = subprocess.run(
+                ["git", "credential", "fill"],
+                input="protocol=https\nhost=github.com\n\n",
+                capture_output=True,
+                text=True,
+                timeout=3,
+                env=env,
+            )
+            if proc.returncode == 0 and proc.stdout:
+                for line in proc.stdout.splitlines():
+                    if line.startswith("password="):
+                        val = line.split("=", 1)[1].strip()
+                        if val:
+                            self._cached_token = val
+                            return self._cached_token
+        except Exception:
+            pass
 
         return ""
 
     def auth_status(self) -> dict[str, Any]:
-        token = self._get_token()
         if shutil.which("gh"):
             try:
                 user = self._request_gh("GET", "/user")
@@ -82,6 +87,7 @@ class GitHubClient:
                     "provider": "gh-cli",
                 }
             except Exception as exc:
+                token = self._get_token()
                 if not token:
                     return {
                         "connected": False,
@@ -89,6 +95,9 @@ class GitHubClient:
                         "error": f"GitHub CLI is not authenticated: {exc}",
                         "provider": "gh-cli",
                     }
+        else:
+            token = self._get_token()
+
         if token:
             try:
                 user = self._request_token("GET", "/user", token=token)
@@ -156,13 +165,15 @@ class GitHubClient:
             return json.loads(raw) if raw else None
 
     def request(self, method: str, path: str, data: Any | None = None) -> Any:
-        token = self._get_token()
         if shutil.which("gh"):
             try:
                 return self._request_gh(method, path, data)
             except Exception as exc:
+                token = self._get_token()
                 if not token:
                     raise
+        else:
+            token = self._get_token()
         if token:
             return self._request_token(method, path, data, token=token)
         raise RuntimeError("GitHub CLI (gh) or GITHUB_TOKEN is required for Issue/PR operations")

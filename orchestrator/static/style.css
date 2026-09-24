@@ -2315,6 +2315,18 @@ body {
   border: 1px solid rgba(59, 130, 246, 0.4);
 }
 
+.active-task-badge.review {
+  background: rgba(168, 85, 247, 0.2);
+  color: #c084fc;
+  border: 1px solid rgba(168, 85, 247, 0.4);
+}
+
+.active-task-badge.waiting {
+  background: rgba(245, 158, 11, 0.2);
+  color: #fbbf24;
+  border: 1px solid rgba(245, 158, 11, 0.4);
+}
+
 .active-task-badge.blocked {
   background: rgba(239, 68, 68, 0.2);
   color: #f87171;
@@ -2414,6 +2426,24 @@ body {
 @keyframes live-dot-pulse {
   0%, 100% { transform: scale(1); opacity: 1; box-shadow: 0 0 8px #10b981; }
   50% { transform: scale(1.3); opacity: 0.6; box-shadow: 0 0 14px #34d399; }
+}
+
+.live-pulse-dot.idle {
+  background: #a855f7;
+  box-shadow: 0 0 6px #a855f7;
+  animation: none;
+}
+
+.live-pulse-dot.blocked {
+  background: #ef4444;
+  box-shadow: 0 0 6px #ef4444;
+  animation: none;
+}
+
+.live-pulse-dot.waiting {
+  background: #f59e0b;
+  box-shadow: 0 0 6px #f59e0b;
+  animation: none;
 }
 
 .agy-log-terminal {

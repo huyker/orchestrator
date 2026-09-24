@@ -126,24 +126,36 @@ function copyText(text, ev) {
   }
 }
 
-function formatAgyLog10(logText, issueNumber) {
+function formatAgyLog10(logText, issueNumber, taskStatus) {
+  const isBlocked = taskStatus === 'BLOCKED';
+  const isReview = taskStatus === 'WAITING_GPT_REVIEW';
+  const isWaiting = taskStatus === 'WAITING_ANSWER' || taskStatus === 'WAITING_CONDITION';
+  const dotCls = isBlocked ? 'blocked' : (isReview ? 'idle' : (isWaiting ? 'waiting' : ''));
+
+  let footerStatus = '● Đang hoạt động';
+  if (isReview) footerStatus = '● Chờ GPT Review';
+  else if (isBlocked) footerStatus = '● Tạm dừng (Blocked)';
+  else if (taskStatus === 'WAITING_ANSWER') footerStatus = '● Chờ người dùng phản hồi';
+  else if (taskStatus === 'APPROVED_WAITING_MERGE') footerStatus = '● Đã duyệt - Chờ Merge';
+  else if (taskStatus === 'DONE') footerStatus = '● Đã hoàn thành';
+
   const raw = (logText || '').trim();
   if (!raw) {
     return `
       <div class="agy-live-log-card">
         <div class="agy-log-header">
           <div class="agy-log-title">
-            <span class="live-pulse-dot"></span>
+            <span class="live-pulse-dot ${dotCls}"></span>
             <span class="font-mono">AGY EXECUTION LOG (10 DÒNG CUỐI)</span>
           </div>
         </div>
         <div class="agy-log-terminal font-mono">
           <div class="placeholder-msg" style="padding: 24px 12px; color: #64748b; font-size: 11px;">
-            ⏳ Đang khởi tạo agy runner... Đang chờ output log đầu tiên từ agent.
+            ${isReview ? '👁 Task đang trong giai đoạn GPT Review kết quả PR.' : (isBlocked ? '⚠️ Task đang tạm dừng (Blocked) do gặp lỗi.' : '⏳ Đang khởi tạo agy runner... Đang chờ output log đầu tiên từ agent.')}
           </div>
         </div>
         <div class="agy-log-footer font-mono">
-          <span>● Tự động cập nhật mỗi chu kỳ</span>
+          <span>${footerStatus} · .orchestrator-runtime</span>
           <span>Issue #${issueNumber}</span>
         </div>
       </div>
@@ -187,7 +199,7 @@ function formatAgyLog10(logText, issueNumber) {
     <div class="agy-live-log-card">
       <div class="agy-log-header">
         <div class="agy-log-title">
-          <span class="live-pulse-dot"></span>
+          <span class="live-pulse-dot ${dotCls}"></span>
           <span class="font-mono">AGY EXECUTION LOG (10 DÒNG CUỐI)</span>
         </div>
         <button class="btn-xs btn-copy-log" onclick="copyText(decodeURIComponent('${safeRaw}'), event)" title="Copy tối đa 10 dòng đầy đủ không xuống dòng">📋 Copy 10 Dòng (Không xuống dòng)</button>
@@ -196,7 +208,7 @@ function formatAgyLog10(logText, issueNumber) {
         ${linesHtml}
       </div>
       <div class="agy-log-footer font-mono">
-        <span>● Đang hoạt động · .orchestrator-runtime</span>
+        <span>${footerStatus} · .orchestrator-runtime</span>
         <span>Issue #${issueNumber}</span>
       </div>
     </div>
@@ -380,8 +392,26 @@ function renderDashboardKPIs(status) {
         const p = task.payload || {};
         const lc = task.lifecycle || {};
         const isBlocked = task.status === 'BLOCKED' || lc.is_blocked;
-        const statusBadgeCls = isBlocked ? 'blocked' : 'running';
-        const statusBadgeText = isBlocked ? '⚠️ BLOCKED' : '⚡ RUNNING';
+        let statusBadgeCls = 'running';
+        let statusBadgeText = '⚡ RUNNING';
+        if (isBlocked) {
+          statusBadgeCls = 'blocked';
+          statusBadgeText = '⚠️ BLOCKED';
+        } else if (task.status === 'WAITING_GPT_REVIEW') {
+          statusBadgeCls = 'review';
+          statusBadgeText = '👁 GPT REVIEW';
+        } else if (task.status === 'WAITING_ANSWER') {
+          statusBadgeCls = 'waiting';
+          statusBadgeText = '❓ WAITING ANSWER';
+        } else if (task.status === 'APPROVED_WAITING_MERGE') {
+          statusBadgeCls = 'review';
+          statusBadgeText = '⏳ WAITING MERGE';
+        } else if (task.status === 'WAITING_CONDITION') {
+          statusBadgeCls = 'waiting';
+          statusBadgeText = '⏳ WAITING CONDITION';
+        } else if (task.status && task.status !== 'RUNNING') {
+          statusBadgeText = `⚡ ${task.status}`;
+        }
 
         // Downstream tasks waiting for this running task
         const downstream = findDownstreamDependents(task.issue_number, status.issues || []);
@@ -435,7 +465,7 @@ function renderDashboardKPIs(status) {
 
               <!-- Cột Phải: AGY Live Execution Log (10 Dòng Cuối Cùng) -->
               <div class="active-task-log-col">
-                ${formatAgyLog10(logSample, task.issue_number)}
+                ${formatAgyLog10(logSample, task.issue_number, task.status)}
               </div>
             </div>
           </div>
@@ -887,8 +917,8 @@ function renderDetailTasks(project) {
                 <span class="task-ref font-mono">
                   #${esc(item.number)} · ${esc(task.task_id || 'TASK')}
                 </span>
-                <span class="task-state-badge ${isBlocked ? 'highlight-rose' : 'highlight-cyan'} font-mono">
-                  ${isBlocked ? '⚠️ BLOCKED' : '⚡ RUNNING'}
+                <span class="task-state-badge ${isBlocked ? 'highlight-rose' : ((lc.status === 'WAITING_GPT_REVIEW' || task.status === 'WAITING_GPT_REVIEW') ? 'highlight-purple' : 'highlight-cyan')} font-mono">
+                  ${isBlocked ? '⚠️ BLOCKED' : ((lc.status === 'WAITING_GPT_REVIEW' || task.status === 'WAITING_GPT_REVIEW') ? '👁 GPT REVIEW' : '⚡ RUNNING')}
                 </span>
               </div>
               <div class="task-title">
@@ -907,7 +937,7 @@ function renderDetailTasks(project) {
               </div>
             </div>
             <div class="active-task-log-col">
-              ${formatAgyLog10(logSample, item.number)}
+              ${formatAgyLog10(logSample, item.number, lc.status || task.status)}
             </div>
           </div>
         </div>
