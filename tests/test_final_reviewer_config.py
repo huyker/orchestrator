@@ -306,8 +306,8 @@ class FinalReviewerConfigTests(unittest.TestCase):
                 )
                 engine._reconcile_contract = lambda l, i, t, d: (l["payload"], True)
                 engine.github.comments = lambda repo, num: []
-                engine.github.get_pr = lambda repo, num: {"number": num, "merged": False, "head": {"sha": "abc"}}
-                engine.github.merge_pr = lambda repo, pr_num, head_sha: {"merged": True}
+                engine.github.get_pr = lambda repo, num: {"number": num, "merged": False, "state": "open", "head": {"sha": "abc"}}
+                engine.github.merge_pr = lambda repo, pr_num, **kwargs: {"merged": True}
                 engine.github.delete_branch = lambda repo, branch: True
                 engine.workspace.remove_worktree = lambda repo, branch: None
 
@@ -331,13 +331,77 @@ class FinalReviewerConfigTests(unittest.TestCase):
                 # Execute _handle_active in gemini mode
                 engine._handle_active(lease)
 
-                # Should have emitted gemini_approved
+                # Should have emitted gemini_approved and complete with post_merge_audit_required
                 event_types = [e[0] for e in emitted_events]
                 self.assertIn("gemini_approved", event_types)
+                self.assertIn("complete", event_types)
+                complete_payload = [e[1] for e in emitted_events if e[0] == "complete"][0]
+                self.assertTrue(complete_payload.get("post_merge_audit_required"))
+            finally:
+                engine.state.close()
+
+    def test_post_merge_audit_comment_and_telegram_formatting(self):
+        with tempfile.TemporaryDirectory() as td:
+            reg = Path(td) / "projects.json"
+            reg.write_text(json.dumps({"schema_version": 1, "projects": [{"id": "p", "repo": "u/r"}]}))
+            runtime = Path(td) / "runtime"
+            settings = Settings(
+                control_repo="",
+                token="",
+                registry_file=reg,
+                runtime_dir=runtime,
+                workspace_root=Path(td) / "managed",
+                poll_interval=5,
+                git_transport="ssh",
+                agy_bin="agy",
+                agent_effort="medium",
+                agent_timeout=1800,
+                test_timeout=600,
+                lease_timeout=90,
+                dashboard_host="127.0.0.1",
+                dashboard_port=0,
+                allowed_authors=("u",),
+                final_reviewer="gemini",
+            )
+            engine = OrchestratorEngine(settings)
+            try:
+                engine.state.force_claim(
+                    engine.instance_id,
+                    20,
+                    "DONE",
+                    {"logical_issue_id": "issue20", "issue_repo": "u/r"},
+                )
+                marker, body, comment = engine.format_event_comment(
+                    20,
+                    "complete",
+                    logical_issue_id="issue20",
+                    pr_number=55,
+                    issue_repo="u/r",
+                    reviewer="Gemini",
+                    post_merge_audit_required=True,
+                )
+                self.assertIn("[issue20_done_byORCH]", comment)
+                self.assertIn("Post-Merge Audit Trigger for ChatGPT", comment)
+                self.assertIn("condition: [\"issue20\"]", comment)
+
+                # Check Telegram message format
+                tg_msg = engine.telegram.format_event_message("complete", {
+                    "issue_number": 20,
+                    "task_id": "issue20",
+                    "title": "Build Player Controller",
+                    "issue_repo": "u/r",
+                    "pr_number": 55,
+                    "reviewer": "Gemini",
+                    "post_merge_audit_required": True,
+                })
+                self.assertIn("HOÀN THÀNH VÀ MERGE PR THÀNH CÔNG", tg_msg)
+                self.assertIn("Post-Merge Trigger", tg_msg)
+                self.assertIn("ChatGPT", tg_msg)
             finally:
                 engine.state.close()
 
 
 if __name__ == "__main__":
     unittest.main()
+
 

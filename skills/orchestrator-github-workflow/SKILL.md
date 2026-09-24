@@ -464,3 +464,30 @@ New work must use the normal `[issueN]` + `orchestrator-task` contract and an ex
 
 Never create a new Issue for in-scope review fixes. Those always remain on the same Issue / same branch / same PR.
 
+## Mandatory Post-Merge GPT Comprehensive Audit & Fix Rule
+
+Regardless of which reviewer approved the PR (ChatGPT, Gemini running 100% on a single AGY thread, or a human operator):
+
+1. **Mandatory Post-Merge Trigger**:
+   - Once any PR/MR is merged and Orchestrator marks the task done (e.g. `[issueN_done_byORCH]` or `[issueN_done_byGPT]`), ChatGPT is **always triggered** to perform a comprehensive post-merge audit.
+   - The trigger signal is either:
+     - The `[issueN_done_byORCH]` comment containing the `Post-Merge Audit Trigger for ChatGPT` block; OR
+     - An Issue transition to closed / PR merged in a managed project repository.
+
+2. **Audit Scope**:
+   - ChatGPT must inspect the complete merged changeset/PR diff against the repository:
+     - Verify full alignment with the canonical task contract and milestone goals.
+     - Check for regressions, subtle edge cases, architectural coherence, performance issues, or game-balance discrepancies.
+     - Ensure game rules, unit tests, and coding standards are rigorously maintained.
+
+3. **Submitting Fix Requests**:
+   - If no issues are found, the task remains successfully completed.
+   - If any bugs, regressions, or necessary fixes are detected during the post-merge audit, ChatGPT **must submit a fix request** via one of two paths:
+     - **Option A (Reopen/Rework on same Issue)**: Post `[issueN_review_fix_byGPT]` on the same Issue if the issue can be reopened or is still in rework state.
+     - **Option B (New Dedicated Fix Issue - Recommended for merged code)**: Create a new canonical task Issue (e.g. `[issueM] Post-merge fixes for [issueN]: <short description>`) with:
+       - `"issue_id": "issueM"`
+       - `"condition": ["issueN"]`
+       - Concrete findings, expected behavior, and acceptance criteria in the `orchestrator-task` contract.
+     - Orchestrator and AGY will immediately detect the new ready task, claim it, and resolve all reported issues.
+
+

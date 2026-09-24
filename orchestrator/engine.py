@@ -3,6 +3,7 @@ from __future__ import annotations
 import datetime
 import fnmatch
 import json
+import logging
 import os
 import re
 import shutil
@@ -14,6 +15,8 @@ import time
 import uuid
 from pathlib import Path
 from typing import Any, Callable
+
+logger = logging.getLogger(__name__)
 
 from .github_client import GitHubClient
 from .graphify_adapter import GraphifyAdapter
@@ -581,7 +584,21 @@ class OrchestratorEngine:
             **payload,
         }
         header = f"[{logical_issue}_{spec_event}_by{actor}]"
-        comment_body = f"{header}\n\n```orchestrator-event\n" + json.dumps(body, ensure_ascii=False, indent=2) + "\n```"
+
+        post_merge_notice = ""
+        if spec_event == "done":
+            reviewer_name = payload.get("reviewer") or ("Gemini" if self.get_final_reviewer() == "gemini" else "ChatGPT")
+            post_merge_notice = (
+                f"\n\n### 🛡️ Post-Merge Audit Trigger for ChatGPT\n"
+                f"Regardless of which reviewer approved this PR ({reviewer_name}), "
+                f"ChatGPT is triggered to audit the entire merged changeset for `{logical_issue}`:\n"
+                f"- Review all merged code changes, architecture compliance, edge cases, and potential regressions.\n"
+                f"- If defects or fixes are identified, ChatGPT must submit a fix request:\n"
+                f"  1. Either post review feedback directly in this Issue thread, OR\n"
+                f"  2. Create a new follow-up Issue with `condition: [\"{logical_issue}\"]` so Orchestrator and AGY can resolve it immediately.\n"
+            )
+
+        comment_body = f"{header}\n\n```orchestrator-event\n" + json.dumps(body, ensure_ascii=False, indent=2) + f"\n```{post_merge_notice}"
         return header, body, comment_body
 
     def format_handoff(
@@ -1604,7 +1621,16 @@ class OrchestratorEngine:
                     commit_title=f"Merge pull request #{pr['number']} for issue #{issue_number} (Gemini auto-approved)",
                 )
                 if merge_res.get("merged"):
-                    self.event(issue_number, "complete", merged_pr=pr.get("html_url") or f"PR #{pr['number']}")
+                    self.event(
+                        issue_number,
+                        "complete",
+                        merged_pr=pr.get("html_url") or f"PR #{pr['number']}",
+                        pr_number=pr["number"],
+                        pr_head_sha=head_sha,
+                        reviewer="gemini",
+                        gemini_model=self.get_gemini_reviewer_model(),
+                        post_merge_audit_required=True,
+                    )
                     self.set_label(issue_number, LABEL_DONE)
                     self.github.close_issue(self._issue_repo(issue_number), issue_number)
                     self.state.release(self.instance_id, issue_number=issue_number)
@@ -1858,7 +1884,14 @@ class OrchestratorEngine:
 
             pr = self.github.get_pr(payload["target_repo"], pr_num)
             if pr.get("merged_at") or pr.get("merged"):
-                self.event(issue_number, "complete", merged_pr=pr.get("html_url") or f"PR #{pr_num}")
+                self.event(
+                    issue_number,
+                    "complete",
+                    merged_pr=pr.get("html_url") or f"PR #{pr_num}",
+                    pr_number=pr_num,
+                    reviewer=self.get_final_reviewer(),
+                    post_merge_audit_required=True,
+                )
                 self.set_label(issue_number, LABEL_DONE)
                 self.github.close_issue(self._issue_repo(issue_number), issue_number)
                 self.state.release(self.instance_id, issue_number=issue_number)
@@ -1872,7 +1905,14 @@ class OrchestratorEngine:
                         commit_title=f"Merge pull request #{pr_num} for issue #{issue_number}",
                     )
                     if merge_res.get("merged"):
-                        self.event(issue_number, "complete", merged_pr=pr.get("html_url") or f"PR #{pr_num}")
+                        self.event(
+                            issue_number,
+                            "complete",
+                            merged_pr=pr.get("html_url") or f"PR #{pr_num}",
+                            pr_number=pr_num,
+                            reviewer=self.get_final_reviewer(),
+                            post_merge_audit_required=True,
+                        )
                         self.set_label(issue_number, LABEL_DONE)
                         self.github.close_issue(self._issue_repo(issue_number), issue_number)
                         self.state.release(self.instance_id, issue_number=issue_number)

@@ -364,16 +364,19 @@ class TelegramNotifier:
                 + (f"🔗 <a href='{issue_url}'>Xem Issue trên GitHub</a>" if issue_url else "")
             )
 
-        # 8. Hoàn thành Task
+        # 8. Hoàn thành Task & Trigger Post-Merge Audit
         if event_type in ("complete", "done"):
             pr_part = f'<a href="{pr_url}">PR #{pr_number}</a>' if pr_url else f"PR #{pr_number}"
+            reviewer_used = data.get("reviewer") or ("Gemini" if data.get("gemini_model") else "Reviewer")
             return (
-                f"🎉 <b>[ORCHESTRATOR] HOÀN THÀNH TASK THÀNH CÔNG</b>\n"
+                f"🎉 <b>[ORCHESTRATOR] HOÀN THÀNH VÀ MERGE PR THÀNH CÔNG</b>\n"
                 f"━━━━━━━━━━━━━━━━━━━━\n"
                 f"📌 <b>Task:</b> #{issue_num} · <code>{task_id or 'TASK'}</code>\n"
                 f"🏷 <b>Tiêu đề:</b> {title}\n"
                 f"📦 <b>Dự án:</b> <code>{issue_repo}</code>\n"
                 f"🔀 <b>PR đã merge:</b> {pr_part}\n"
+                f"🛡️ <b>Reviewer duyệt:</b> <code>{reviewer_used}</code>\n"
+                f"🤖 <b>Post-Merge Trigger:</b> Đã kích hoạt yêu cầu ChatGPT kiểm tra & review toàn diện thay đổi (hỗ trợ fix lỗi trên task hoặc tạo issue mới nếu cần).\n"
                 f"✨ <i>Mã nguồn đã được tích hợp thành công vào nhánh chính!</i>\n"
                 f"⏰ <b>Thời gian:</b> {now}\n"
                 + (f"🔗 <a href='{issue_url}'>Xem Issue trên GitHub</a>" if issue_url else "")

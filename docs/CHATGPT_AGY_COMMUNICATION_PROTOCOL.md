@@ -1455,3 +1455,27 @@ reason: <why this is outside the current task scope>
 
 In-scope defects MUST NOT create a new Issue; they stay in the original Issue as `review_fix_byGPT`.
 
+---
+
+## 28. Quy tắc Post-Merge Audit của ChatGPT (Bất kể Reviewer nào duyệt)
+
+### 28.1. Nguyên tắc
+Dù MR/PR được review và phê duyệt bởi bất kỳ cơ chế nào (ChatGPT, Gemini chạy 100% trên luồng AGY nội bộ, hay người vận hành):
+- Sau khi MR/PR được merge vào nhánh chính (`base_branch`), ChatGPT luôn được trigger để thực hiện **Post-Merge Comprehensive Audit** (kiểm tra lại toàn bộ mã nguồn vừa merge).
+- Orchestrator gắn cờ `post_merge_audit_required: true` và gửi thông điệp yêu cầu ChatGPT vào comment `[issueN_done_byORCH]`.
+
+### 28.2. Phạm vi kiểm tra của ChatGPT sau merge
+- Kiểm tra toàn bộ diff của commit đã merge đối chiếu với Task Contract và kiến trúc tổng thể.
+- Rà soát các rủi ro phát sinh: xung đột logic, regression bugs, edge cases, bảo mật và tính cân bằng game.
+- Đảm bảo tuân thủ tiêu chuẩn code và các test suite.
+
+### 28.3. Gửi yêu cầu Fix lỗi nếu phát hiện vấn đề
+Nếu ChatGPT phát hiện lỗi hoặc thiếu sót sau merge, ChatGPT gửi yêu cầu fix theo một trong hai hình thức:
+1. **Trực tiếp trên Issue hiện tại**: Gửi comment `[issueN_review_fix_byGPT]` yêu cầu khắc phục.
+2. **Tạo Task / Issue mới kế thừa**: Tạo một Issue canonical mới (ví dụ: `[issueM] Post-merge fixes for [issueN]: <mô tả>`) với:
+   - `"issue_id": "issueM"`
+   - `"condition": ["issueN"]`
+   - Contract chi tiết các điểm cần fix và tiêu chí nghiệm thu.
+   - Orchestrator và AGY sẽ tự động tiếp nhận task mới ngay lập tức.
+
+

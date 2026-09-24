@@ -14,3 +14,8 @@
    - The system checks every 10 minutes for errors: server health, task leases, BLOCKED states, model configuration issues, and cycle/condition issues.
    - When errors are found, investigate code and logs directly (no HTML visual inspection unless layout is broken).
    - Fix issues thoroughly, re-test, restart server daemon, and push to git to maintain continuous self-improvement.
+
+4. **Mandatory Post-Merge GPT Audit Rule**:
+   - Regardless of which reviewer approved the PR (ChatGPT, Gemini on single-thread AGY, or human), after any MR/PR is merged into the base branch, ChatGPT must always be triggered to perform a comprehensive post-merge audit across all changed files and integration points.
+   - If defects, regressions, or follow-up improvements are identified, ChatGPT must submit a fix request: either by requesting rework directly in the canonical task issue or by creating a new canonical Issue (e.g. `[issueM] Fix post-merge issues from [issueN]: <description>`) with prerequisite `condition: ["issueN"]` so Orchestrator and AGY can immediately execute the fixes.
+

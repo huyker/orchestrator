@@ -181,9 +181,10 @@
               <div class="section-badge amber">CẤU HÌNH FINAL REVIEWER & LUỒNG GIAO TIẾP</div>
               <h2 class="reviewer-config-title">🛡️ Final Reviewer & Tương Tác Giữa Các Agent</h2>
               <p class="reviewer-config-desc">
-                Cấu hình vai trò Reviewer cuối cùng cho vòng đời task:
+                Cấu hình vai trò Reviewer cho vòng đời task:
                 <br>• <b>ChatGPT</b>: Tất cả Agent và Orchestrator giao tiếp, trao đổi Q&A và nhận xét mã nguồn qua GitHub Issues & Pull Requests như hiện tại.
                 <br>• <b>Gemini</b>: Thực hiện 100% giữa các Agent trên 1 luồng AGY nội bộ, tự động xử lý Q&A và auto-merge PR khi Gemini phê duyệt hoàn tất.
+                <br>• <b>Quy tắc Post-Merge Audit</b>: Dù chọn bất kỳ Reviewer nào, sau khi PR được merge thì ChatGPT luôn được trigger để review lại toàn bộ thay đổi và gửi yêu cầu fix lỗi (trực tiếp trên task hoặc tạo issue mới) nếu phát hiện vấn đề.
               </p>
             </div>
             <div class="reviewer-config-right">
