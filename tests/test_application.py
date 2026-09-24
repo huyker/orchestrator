@@ -43,6 +43,7 @@ class AllInOneApplicationTests(unittest.TestCase):
                 app.engine.ensure_labels = lambda: calls.append("labels")
                 app.engine.serve_loop = lambda stop: calls.append("worker")
                 app.engine.github_auth_status = lambda: {"connected": True, "login": "owner"}
+                app.engine.reconcile_startup_state = lambda: {}
 
                 thread = threading.Thread(target=app._worker_after_sync)
                 thread.start()
@@ -64,6 +65,7 @@ class AllInOneApplicationTests(unittest.TestCase):
                 app.engine.github_auth_status = lambda: dict(auth)
                 app.engine.ensure_labels = lambda: calls.append("labels")
                 app.engine.serve_loop = lambda stop: calls.append("worker")
+                app.engine.reconcile_startup_state = lambda: {}
                 app.projects_ready.set()
 
                 thread = threading.Thread(target=app._worker_after_sync)

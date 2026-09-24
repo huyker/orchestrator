@@ -1195,6 +1195,9 @@ async function refresh() {
     // Sync AGY Model Config
     syncAgyModelUI(s);
 
+    // Sync Final Reviewer Config
+    syncFinalReviewerUI(s);
+
     // Sync Telegram UI
     syncTelegramUI(s);
 
@@ -1277,6 +1280,120 @@ window.onAgentModelChange = async function(selectEl, agentId) {
     }
   } catch (err) {
     showBlock(`Lỗi cấu hình Model cho Agent ${agentId}: ${err.message}`);
+  }
+};
+
+// ================= FINAL REVIEWER CONFIG =================
+let selectedReviewerMode = 'chatgpt';
+let isUserInteractingReviewerMode = false;
+
+function syncFinalReviewerUI(s) {
+  const cfg = s?.final_reviewer_config || {};
+  const currentReviewer = (cfg.final_reviewer || 'chatgpt').toLowerCase();
+  const currentGeminiModel = cfg.gemini_reviewer_model || 'gemini-3.8-flash-high';
+  const availableGemini = cfg.available_gemini_models || [
+    { id: 'gemini-3.8-flash-high', name: 'Gemini 3.8 Flash (High)', default: true }
+  ];
+
+  // Sync Nav Select
+  const selectNav = document.getElementById('selectFinalReviewerNav');
+  if (selectNav && document.activeElement !== selectNav) {
+    selectNav.value = currentReviewer;
+  }
+
+  // Sync Gemini Model Select
+  const selectGemini = document.getElementById('selectGeminiReviewerModel');
+  if (selectGemini) {
+    if (selectGemini.options.length <= 1 || selectGemini.dataset.loadedCount != availableGemini.length) {
+      selectGemini.innerHTML = availableGemini.map(m => {
+        const isDef = m.default ? ' (Mặc định)' : '';
+        return `<option value="${esc(m.id)}">${esc(m.name)}${isDef}</option>`;
+      }).join('');
+      selectGemini.dataset.loadedCount = availableGemini.length;
+    }
+    if (document.activeElement !== selectGemini && !selectGemini.dataset.userEdited) {
+      selectGemini.value = currentGeminiModel;
+    }
+  }
+
+  // Update Status Label
+  const label = document.getElementById('currentFinalReviewerLabel');
+  if (label) {
+    if (currentReviewer === 'gemini') {
+      label.textContent = `Gemini (${currentGeminiModel}) · 100% AGY`;
+      label.className = 'highlight-cyan font-mono';
+    } else {
+      label.textContent = 'ChatGPT (GitHub Issue & PR)';
+      label.className = 'highlight-amber font-mono';
+    }
+  }
+
+  // Only auto-update the active card if user is not currently clicking/editing it
+  if (!isUserInteractingReviewerMode) {
+    selectedReviewerMode = currentReviewer;
+    updateReviewerCardsVisual(currentReviewer);
+  }
+}
+
+function updateReviewerCardsVisual(mode) {
+  const optChatgpt = document.getElementById('optReviewerChatgpt');
+  const optGemini = document.getElementById('optReviewerGemini');
+  const geminiBox = document.getElementById('geminiModelBox');
+  const chatgptBox = document.getElementById('chatgptInfoBox');
+
+  if (optChatgpt) optChatgpt.classList.toggle('active', mode === 'chatgpt');
+  if (optGemini) optGemini.classList.toggle('active', mode === 'gemini');
+  if (geminiBox) geminiBox.classList.toggle('hidden', mode !== 'gemini');
+  if (chatgptBox) chatgptBox.classList.toggle('hidden', mode === 'gemini');
+}
+
+window.selectReviewerMode = function(mode) {
+  selectedReviewerMode = mode;
+  isUserInteractingReviewerMode = true;
+  updateReviewerCardsVisual(mode);
+};
+
+window.saveFinalReviewerConfig = async function(explicitMode = null) {
+  const mode = explicitMode || selectedReviewerMode;
+  const selectGemini = document.getElementById('selectGeminiReviewerModel');
+  const geminiModel = selectGemini ? selectGemini.value : 'gemini-3.8-flash-high';
+  const btn = document.getElementById('btnSaveFinalReviewer');
+
+  const origBtnText = btn ? btn.innerHTML : '';
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = '<span class="btn-icon">⏳</span> Đang lưu...';
+  }
+
+  try {
+    const res = await api('/api/config/final-reviewer', {
+      method: 'POST',
+      body: JSON.stringify({
+        final_reviewer: mode,
+        gemini_reviewer_model: geminiModel,
+      }),
+    });
+    if (res.ok) {
+      isUserInteractingReviewerMode = false;
+      if (selectGemini) delete selectGemini.dataset.userEdited;
+
+      // Toast feedback
+      const navToast = document.getElementById('finalReviewerNavToast');
+      if (navToast) {
+        navToast.classList.remove('hidden');
+        setTimeout(() => navToast.classList.add('hidden'), 2500);
+      }
+      await refresh();
+    } else {
+      showBlock(`Lỗi lưu Final Reviewer: ${res.error || 'Thất bại'}`);
+    }
+  } catch (err) {
+    showBlock(`Lỗi kết nối khi lưu Final Reviewer: ${err.message}`);
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = origBtnText;
+    }
   }
 };
 
@@ -1531,6 +1648,23 @@ function initEventListeners() {
     btnSaveCard.addEventListener('click', () => {
       const val = selectCard ? selectCard.value : (selectNav ? selectNav.value : '');
       if (val) handleAgyModelChange(val);
+    });
+  }
+
+  // Final Reviewer Listeners
+  const selectReviewerNav = document.getElementById('selectFinalReviewerNav');
+  if (selectReviewerNav) {
+    selectReviewerNav.addEventListener('change', async (e) => {
+      const mode = e.target.value;
+      window.selectReviewerMode(mode);
+      await window.saveFinalReviewerConfig(mode);
+    });
+  }
+
+  const selectGeminiReviewer = document.getElementById('selectGeminiReviewerModel');
+  if (selectGeminiReviewer) {
+    selectGeminiReviewer.addEventListener('change', () => {
+      selectGeminiReviewer.dataset.userEdited = '1';
     });
   }
 

@@ -75,6 +75,7 @@ class TestStartupReconciliation(unittest.TestCase):
             self.assertIsNotNone(l102)
             self.assertEqual(l102["instance_id"], "inst-2")
             self.assertEqual(l102["status"], "WAITING_ANSWER")
+            store.close()
 
     def test_reconcile_startup_state(self):
         with tempfile.TemporaryDirectory() as td:
@@ -159,6 +160,7 @@ class TestStartupReconciliation(unittest.TestCase):
             self.assertIsNotNone(l101)
             self.assertEqual(l101["status"], "REWORK")
             self.assertEqual(l101["instance_id"], engine.instance_id)
+            engine.close()
 
     def test_tick_picks_up_unleased_rework_issue(self):
         with tempfile.TemporaryDirectory() as td:
@@ -219,6 +221,7 @@ class TestStartupReconciliation(unittest.TestCase):
             self.assertIsNotNone(lease)
             self.assertEqual(lease["status"], "REWORK")
             engine._handle_active.assert_called_once()
+            engine.close()
 
     def test_git_local_task_issues_and_sync_datetime(self):
         with tempfile.TemporaryDirectory() as td:
@@ -283,6 +286,7 @@ class TestStartupReconciliation(unittest.TestCase):
             self.assertIsNotNone(engine._last_sync_at)
             snap2 = engine.snapshot()
             self.assertEqual(snap2["auto_sync"]["last_sync_datetime"], engine._last_sync_datetime)
+            engine.close()
 
     def test_token_persistence_and_git_config(self):
         from orchestrator.github_client import GitHubClient
@@ -330,6 +334,7 @@ class TestStartupReconciliation(unittest.TestCase):
             engine._commit_registry_change("update test")
             log = subprocess.run(["git", "log", "-n", "1", "--oneline"], cwd=root, capture_output=True, text=True)
             self.assertIn("update test", log.stdout)
+            engine.close()
 
     def test_gpt_approved_auto_merges_pr_and_completes(self):
         with tempfile.TemporaryDirectory() as td:
@@ -418,6 +423,7 @@ class TestStartupReconciliation(unittest.TestCase):
             engine.github.close_issue.assert_called_once_with("owner/repo", 77)
             # Lease should be released
             self.assertIsNone(engine.state.get_lease(77))
+            engine.close()
 
     def test_condition_reconciled_with_closed_prerequisite(self):
         with tempfile.TemporaryDirectory() as td:
@@ -480,6 +486,7 @@ class TestStartupReconciliation(unittest.TestCase):
             # Issue 7 should now be marked READY!
             engine.github.set_lifecycle_label.assert_called_with("owner/repo", 7, LABEL_READY)
             self.assertIn(LABEL_READY, [l if isinstance(l, str) else l.get("name") for l in waiting_issue["labels"]])
+            engine.close()
 
 
 if __name__ == "__main__":

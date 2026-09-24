@@ -51,6 +51,16 @@
           </select>
           <span id="modelSaveToast" class="model-save-toast hidden">✓ Đã lưu</span>
         </div>
+        <!-- Final Reviewer Global Selector in Navbar -->
+        <div class="model-picker-wrap reviewer-picker-wrap" title="Chọn Final Reviewer: ChatGPT (qua GitHub Issue/PR) hoặc Gemini (100% trên 1 luồng AGY)">
+          <span class="model-picker-icon">🛡️</span>
+          <label for="selectFinalReviewerNav" class="model-picker-label">Reviewer:</label>
+          <select id="selectFinalReviewerNav" class="model-picker-select font-mono" aria-label="Chọn Final Reviewer">
+            <option value="chatgpt">🤖 ChatGPT (GitHub)</option>
+            <option value="gemini">✨ Gemini (AGY 100%)</option>
+          </select>
+          <span id="finalReviewerNavToast" class="model-save-toast hidden">✓ Đã lưu</span>
+        </div>
         <div class="status-pill" id="workerBadge" title="Năng lực chạy song song nhiều AGY (ORCH_MAX_WORKERS)">
           <span class="status-dot"></span> Workers: 0/2
         </div>
@@ -159,6 +169,70 @@
               </div>
               <div id="modelConfigStatus" class="model-config-status">
                 <span class="status-dot"></span> Đang áp dụng: <strong id="currentAgyModelLabel" class="highlight-cyan font-mono">gemini-3.8-flash-high</strong>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- Section Cấu Hình Final Reviewer & Luồng Giao Tiếp Agent -->
+        <section class="final-reviewer-section card">
+          <div class="reviewer-config-inner">
+            <div class="reviewer-config-left">
+              <div class="section-badge amber">CẤU HÌNH FINAL REVIEWER & LUỒNG GIAO TIẾP</div>
+              <h2 class="reviewer-config-title">🛡️ Final Reviewer & Tương Tác Giữa Các Agent</h2>
+              <p class="reviewer-config-desc">
+                Cấu hình vai trò Reviewer cuối cùng cho vòng đời task:
+                <br>• <b>ChatGPT</b>: Tất cả Agent và Orchestrator giao tiếp, trao đổi Q&A và nhận xét mã nguồn qua GitHub Issues & Pull Requests như hiện tại.
+                <br>• <b>Gemini</b>: Thực hiện 100% giữa các Agent trên 1 luồng AGY nội bộ, tự động xử lý Q&A và auto-merge PR khi Gemini phê duyệt hoàn tất.
+              </p>
+            </div>
+            <div class="reviewer-config-right">
+              <div class="reviewer-mode-picker">
+                <div class="reviewer-mode-option" id="optReviewerChatgpt" onclick="selectReviewerMode('chatgpt')">
+                  <div class="mode-radio-circle"></div>
+                  <div class="mode-info">
+                    <div class="mode-title">🤖 ChatGPT</div>
+                    <div class="mode-sub">Giao tiếp qua GitHub Issue & PR (Mặc định)</div>
+                  </div>
+                </div>
+                <div class="reviewer-mode-option" id="optReviewerGemini" onclick="selectReviewerMode('gemini')">
+                  <div class="mode-radio-circle"></div>
+                  <div class="mode-info">
+                    <div class="mode-title">✨ Gemini (100% Luồng AGY)</div>
+                    <div class="mode-sub">Tự động giữa các Agent trên 1 luồng AGY</div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Container chọn Model Gemini khi Final Reviewer là Gemini -->
+              <div id="geminiModelBox" class="gemini-model-box hidden">
+                <div class="gemini-field-row">
+                  <label for="selectGeminiReviewerModel" class="reviewer-control-label">
+                    <span>🤖 Phiên Bản Model Gemini Cho Final Reviewer:</span>
+                  </label>
+                  <select id="selectGeminiReviewerModel" class="model-control-select">
+                    <option value="gemini-3.8-flash-high">Gemini 3.8 Flash (High) (Mặc định)</option>
+                  </select>
+                </div>
+                <div class="gemini-hint-msg">
+                  💡 <i>100% tương tác giữa Executor ↔ Reviewer sẽ chạy liên tục trên 1 luồng của AGY với model Gemini đã chọn, không dừng chờ duyệt bên ngoài.</i>
+                </div>
+              </div>
+
+              <!-- Container ghi chú khi Final Reviewer là ChatGPT -->
+              <div id="chatgptInfoBox" class="chatgpt-info-box">
+                <div class="chatgpt-hint-msg">
+                  💬 <i>Khi task hoàn thành, Orchestrator sẽ gắn nhãn <code>orch:gpt-review</code> và gửi event lên Issue để ChatGPT kiểm tra và phê duyệt.</i>
+                </div>
+              </div>
+
+              <div class="reviewer-save-bar">
+                <button id="btnSaveFinalReviewer" class="btn btn-sm btn-primary btn-glow" onclick="saveFinalReviewerConfig()">
+                  <span class="btn-icon">💾</span> Lưu Cấu Hình Reviewer
+                </button>
+                <div id="finalReviewerStatus" class="model-config-status">
+                  <span class="status-dot"></span> Đang áp dụng: <strong id="currentFinalReviewerLabel" class="highlight-amber font-mono">ChatGPT (GitHub Issue)</strong>
+                </div>
               </div>
             </div>
           </div>

@@ -57,6 +57,8 @@ class Settings:
     allowed_authors: tuple[str, ...]
     agy_model: str = "gemini-3.8-flash-high"
     max_workers: int = 2
+    final_reviewer: str = "chatgpt"
+    gemini_reviewer_model: str = "gemini-3.8-flash-high"
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -90,6 +92,8 @@ class Settings:
 
         agy_model = os.getenv("ORCH_AGY_MODEL", "gemini-3.8-flash-high").strip() or "gemini-3.8-flash-high"
         max_workers = max(1, int(os.getenv("ORCH_MAX_WORKERS", "2")))
+        final_reviewer = os.getenv("ORCH_FINAL_REVIEWER", "chatgpt").strip().lower() or "chatgpt"
+        gemini_reviewer_model = os.getenv("ORCH_GEMINI_REVIEWER_MODEL", "gemini-3.8-flash-high").strip() or "gemini-3.8-flash-high"
 
         return cls(
             control_repo=control_repo,
@@ -109,6 +113,8 @@ class Settings:
             allowed_authors=tuple(x.strip() for x in raw_authors.split(",") if x.strip()),
             agy_model=agy_model,
             max_workers=max_workers,
+            final_reviewer=final_reviewer,
+            gemini_reviewer_model=gemini_reviewer_model,
         )
 
 

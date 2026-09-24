@@ -279,6 +279,23 @@ class TelegramNotifier:
                 + (f"🔗 <a href='{issue_url}'>Xem Issue trên GitHub</a>" if issue_url else "")
             )
 
+        # 2b. Gemini đã review & phê duyệt trên 1 luồng AGY
+        if event_type in ("gemini_approved", "approved_by_gemini"):
+            pr_part = f'<a href="{pr_url}">PR #{pr_number} trên GitHub</a>' if pr_url else f"PR #{pr_number}"
+            g_model = data.get("gemini_model") or "Gemini"
+            return (
+                f"✨ <b>[ORCHESTRATOR] GEMINI ĐÃ PHÊ DUYỆT TRÊN AGY THREAD</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n"
+                f"📌 <b>Task:</b> #{issue_num} · <code>{task_id or 'TASK'}</code>\n"
+                f"🏷 <b>Tiêu đề:</b> {title or 'Hoàn thành code & đã duyệt'}\n"
+                f"📦 <b>Dự án:</b> <code>{issue_repo}</code>\n"
+                f"🔀 <b>Pull Request:</b> {pr_part}\n"
+                f"🤖 <b>Final Reviewer:</b> <code>{g_model}</code> (100% AGY Thread)\n"
+                f"💬 <b>Trạng thái:</b> Đã hoàn thành kiểm tra và duyệt tự động trên 1 luồng AGY. Đang tiến hành merge PR.\n"
+                f"⏰ <b>Thời gian:</b> {now}\n"
+                + (f"🔗 <a href='{issue_url}'>Xem Issue trên GitHub</a>" if issue_url else "")
+            )
+
         # 3. Task bị nghẽn (BLOCKED)
         if event_type == "blocked":
             return (

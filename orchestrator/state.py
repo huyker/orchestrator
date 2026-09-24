@@ -425,13 +425,16 @@ class StateStore:
 
     def add_event(self, event_type: str, payload: dict[str, Any]) -> None:
         with self._lock:
-            self.db.execute(
-                "INSERT INTO events(created_at,event_type,payload) VALUES(?,?,?)",
-                (time.time(), event_type, json.dumps(payload, ensure_ascii=False)),
-            )
-            self.db.execute(
-                "DELETE FROM events WHERE id NOT IN (SELECT id FROM events ORDER BY id DESC LIMIT 1000)"
-            )
+            try:
+                self.db.execute(
+                    "INSERT INTO events(created_at,event_type,payload) VALUES(?,?,?)",
+                    (time.time(), event_type, json.dumps(payload, ensure_ascii=False)),
+                )
+                self.db.execute(
+                    "DELETE FROM events WHERE id NOT IN (SELECT id FROM events ORDER BY id DESC LIMIT 1000)"
+                )
+            except (sqlite3.ProgrammingError, sqlite3.OperationalError):
+                pass
 
     def recent_events(self, limit: int = 100) -> list[dict[str, Any]]:
         rows = self.db.execute(

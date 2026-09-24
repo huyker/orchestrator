@@ -76,6 +76,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 "available": self.engine.get_available_agy_models(),
             })
             return
+        if route == "/api/config/final-reviewer":
+            self._json({
+                "ok": True,
+                "final_reviewer": self.engine.get_final_reviewer(),
+                "gemini_reviewer_model": self.engine.get_gemini_reviewer_model(),
+                "available_gemini_models": self.engine.get_available_gemini_models(),
+            })
+            return
         if route == "/api/telegram/config":
             self._json({
                 "ok": True,
@@ -195,6 +203,20 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     raise ValueError("Model identifier cannot be empty")
                 current = self.engine.set_agy_model(model)
                 self._json({"ok": True, "model": current})
+                return
+            if route == "/api/config/final-reviewer":
+                payload = self._read_json()
+                reviewer = payload.get("final_reviewer")
+                gemini_model = payload.get("gemini_reviewer_model") or payload.get("gemini_model")
+                if reviewer:
+                    self.engine.set_final_reviewer(str(reviewer))
+                if gemini_model:
+                    self.engine.set_gemini_reviewer_model(str(gemini_model))
+                self._json({
+                    "ok": True,
+                    "final_reviewer": self.engine.get_final_reviewer(),
+                    "gemini_reviewer_model": self.engine.get_gemini_reviewer_model(),
+                })
                 return
             if route == "/api/config/agent-model":
                 payload = self._read_json()

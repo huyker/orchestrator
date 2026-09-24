@@ -210,6 +210,40 @@ class OrchestratorEngine:
         override = self.get_agent_model(agent_id) if agent_id else None
         return override or agent.get("model") or self.get_agy_model()
 
+    def get_final_reviewer(self) -> str:
+        val = self.state.get_config("final_reviewer") or getattr(self.settings, "final_reviewer", "chatgpt") or "chatgpt"
+        clean = str(val).strip().lower()
+        return "gemini" if clean == "gemini" else "chatgpt"
+
+    def set_final_reviewer(self, reviewer: str) -> str:
+        clean = str(reviewer or "").strip().lower()
+        if clean not in ("chatgpt", "gemini"):
+            raise ValueError("final_reviewer must be 'chatgpt' or 'gemini'")
+        self.state.set_config("final_reviewer", clean)
+        self.state.add_event("final_reviewer_changed", {"final_reviewer": clean})
+        return clean
+
+    def get_gemini_reviewer_model(self) -> str:
+        return self.state.get_config("gemini_reviewer_model") or getattr(self.settings, "gemini_reviewer_model", "gemini-3.8-flash-high") or "gemini-3.8-flash-high"
+
+    def set_gemini_reviewer_model(self, model: str) -> str:
+        clean = str(model or "").strip()
+        if not clean:
+            raise ValueError("gemini_reviewer_model cannot be empty")
+        self.state.set_config("gemini_reviewer_model", clean)
+        self.state.add_event("gemini_reviewer_model_changed", {"model": clean})
+        return clean
+
+    def get_available_gemini_models(self) -> list[dict[str, Any]]:
+        all_models = self.get_available_agy_models()
+        gemini_models = [m for m in all_models if "gemini" in str(m.get("id", "")).lower()]
+        return gemini_models or [
+            {"id": "gemini-3.8-flash-high", "name": "Gemini 3.8 Flash (High)", "default": True},
+            {"id": "gemini-3.8-flash-medium", "name": "Gemini 3.8 Flash (Medium)"},
+            {"id": "gemini-3.8-flash-low", "name": "Gemini 3.8 Flash (Low)"},
+            {"id": "gemini-3.1-pro-high", "name": "Gemini 3.1 Pro (High)"},
+        ]
+
     # ---------- GitHub authentication ----------
     def refresh_github_auth(self) -> dict[str, Any]:
         self._github_auth = self.github.auth_status()
@@ -410,15 +444,16 @@ class OrchestratorEngine:
 
 
     @staticmethod
-    def _lifecycle(status: str, labels: list[str] | None = None) -> dict[str, Any]:
+    def _lifecycle(status: str, labels: list[str] | None = None, final_reviewer: str = "chatgpt") -> dict[str, Any]:
 
         labels = labels or []
+        review_label = "Gemini Review" if str(final_reviewer).lower() == "gemini" else "GPT Review"
         stages = [
             {"id": "READY", "label": "Ready"},
             {"id": "IMPLEMENT", "label": "Implement"},
             {"id": "VALIDATE", "label": "Validate"},
             {"id": "INTERNAL_REVIEW", "label": "QA"},
-            {"id": "GPT_REVIEW", "label": "GPT Review"},
+            {"id": "GPT_REVIEW", "label": review_label},
             {"id": "DONE", "label": "Done"},
         ]
         normalized = str(status or "").upper()
@@ -528,6 +563,9 @@ class OrchestratorEngine:
         elif event_type in ("done", "complete"):
             actor = "ORCH"
             spec_event = "done"
+        elif event_type in ("gemini_approved", "approved_by_gemini"):
+            actor = "GEMINI"
+            spec_event = "approved"
 
         body = {
             "schema_version": 1,
@@ -615,6 +653,7 @@ class OrchestratorEngine:
         github_visible_events = {
             "user_gate_required",
             "ready_for_gpt_review",
+            "gemini_approved",
             "fixdone",
             "question",
             "complete",
@@ -1070,7 +1109,14 @@ class OrchestratorEngine:
             except Exception:
                 pass
 
-    def run_agent(self, agent: dict, prompt: str, worktree: Path, issue_number: int) -> tuple[int, str]:
+    def run_agent(
+        self,
+        agent: dict,
+        prompt: str,
+        worktree: Path,
+        issue_number: int,
+        continue_thread: bool = False,
+    ) -> tuple[int, str]:
         binary = shutil.which(self.settings.agy_bin)
         if not binary:
             return 127, f"AGY executable not found: {self.settings.agy_bin}"
@@ -1083,13 +1129,17 @@ class OrchestratorEngine:
         args = [
             binary,
             "--dangerously-skip-permissions",
+        ]
+        if continue_thread:
+            args.append("--continue")
+        args.extend([
             "--model",
             model,
             "--print",
             short,
             "--agent",
-            agent["agy_agent"],
-        ]
+            agent.get("agy_agent", "auto"),
+        ])
         effort_suffixes = ("-high", "-medium", "-low")
         has_embedded_effort = any(model.lower().endswith(s) for s in effort_suffixes)
         effort_unsupported = model.lower().startswith("claude-")
@@ -1331,7 +1381,12 @@ class OrchestratorEngine:
             raise ValueError("Project manifest identity mismatch")
         profile, executor, reviewer = resolve_profiles(task, catalog)
         executor["model"] = self.resolve_agent_model(executor)
-        reviewer["model"] = self.resolve_agent_model(reviewer)
+        final_reviewer_mode = self.get_final_reviewer()
+        is_gemini_mode = (final_reviewer_mode == "gemini")
+        if is_gemini_mode:
+            reviewer["model"] = self.get_gemini_reviewer_model()
+        else:
+            reviewer["model"] = self.resolve_agent_model(reviewer)
 
         payload.update({
             "project": task["project"],
@@ -1369,19 +1424,50 @@ class OrchestratorEngine:
 
         prompt = f"""# Local executor task\n\nGitHub Issue: {issue_repo}#{issue_number}\nThe Issue task contract is authoritative. Repository plan/rule files are context only.\n\n## Task contract\n{json.dumps(task, ensure_ascii=False, indent=2)}\n\n## Project task profile\n{json.dumps(profile, ensure_ascii=False, indent=2)}\n\n## Project executor profile\n{json.dumps(executor, ensure_ascii=False, indent=2)}\n\n## Approved user gates\n{json.dumps(approved_gates, ensure_ascii=False, indent=2)}\n{gate_instruction}\n## Project context\n{project_context}\n\n## Graphify context (advisory project intelligence, never task authority)\n{graph_context or '[not available]'}\n\n## Latest Issue discussion\n{discussion}\n\nRules:\n- Implement only this Issue contract and current revision.\n- Do not commit, push, create or merge PRs; orchestrator owns Git lifecycle.\n- Never edit orchestrator/project control files unless this task is explicitly authorized as project-config.\n- If product/user input is required, emit exactly one final line:\n  @@ORCH_EVENT@@ {{\"type\":\"question\",\"question_id\":\"stable-id\",\"message\":\"...\",\"options\":[]}}\n- Otherwise complete the requested implementation and local checks.\n"""
         self.log_task(issue_number, "PROMPT", "Generated prompt for executor", prompt_preview=prompt[:600] + "...")
-        code, output = self.run_agent(executor, prompt, worktree, issue_number)
+        agy_thread_started = bool(payload.get("agy_thread_started"))
+        code, output = self.run_agent(
+            executor,
+            prompt,
+            worktree,
+            issue_number,
+            continue_thread=(is_gemini_mode and agy_thread_started),
+        )
+        payload["agy_thread_started"] = True
         self.log_task(issue_number, "EXECUTOR_OUTPUT", f"Executor finished with exit code {code}", output=output)
         question = self._question_from_output(output)
         if question:
-            comment_id = self.event(issue_number, "question", **question)
-            payload.update({
-                "pending_question_id": question["question_id"],
-                "command_after_comment_id": comment_id,
-            })
-            self.state.update_lease(self.instance_id, status="WAITING_ANSWER", payload=payload, issue_number=issue_number)
-            self.set_label(issue_number, LABEL_QUESTION)
-            self.log_task(issue_number, "QUESTION", f"Agent emitted question: {question.get('question_id')}", message=question.get('message'))
-            return
+            if is_gemini_mode:
+                q_msg = question.get("message", "")
+                q_opts = question.get("options", [])
+                consult_prompt = (
+                    f"# Lead Reviewer/Architect Decision on Question\nGitHub Issue: {issue_repo}#{issue_number}\n\n"
+                    f"The executor agent raised a question:\n"
+                    f"- Question ID: {question.get('question_id')}\n"
+                    f"- Question: {q_msg}\n"
+                    f"- Options: {json.dumps(q_opts, ensure_ascii=False)}\n\n"
+                    f"As the lead architect and final reviewer ({reviewer.get('model')}), provide the definitive technical guidance "
+                    f"so the executor can proceed immediately on this AGY thread.\n"
+                )
+                self.log_task(issue_number, "QUESTION", f"Executor asked: {question.get('question_id')}. Consulting Gemini on AGY thread...", message=q_msg)
+                ans_code, ans_output = self.run_agent(reviewer, consult_prompt, worktree, issue_number, continue_thread=True)
+                ans_text = ans_output.strip() if ans_code == 0 and ans_output.strip() else "Proceed according to task specification and conventions."
+                self.event(issue_number, "question", **question)
+                self.event(issue_number, "answer_received", question_id=question.get("question_id"), answer=ans_text, answered_by="gemini")
+                self.log_task(issue_number, "ANSWER", f"Gemini answered on AGY thread: {ans_text[:200]}...")
+                payload["last_consult_answer"] = ans_text
+                self.state.update_lease(self.instance_id, status="REWORK", payload=payload, issue_number=issue_number)
+                self.set_label(issue_number, LABEL_REWORK)
+                return
+            else:
+                comment_id = self.event(issue_number, "question", **question)
+                payload.update({
+                    "pending_question_id": question["question_id"],
+                    "command_after_comment_id": comment_id,
+                })
+                self.state.update_lease(self.instance_id, status="WAITING_ANSWER", payload=payload, issue_number=issue_number)
+                self.set_label(issue_number, LABEL_QUESTION)
+                self.log_task(issue_number, "QUESTION", f"Agent emitted question: {question.get('question_id')}", message=question.get('message'))
+                return
         if code:
             is_transient = "503" in output or "unavailable" in output.lower() or "temporarily unavailable" in output.lower() or "rate limit" in output.lower()
             attempt = int(payload.get("transient_retry_count", 0))
@@ -1453,7 +1539,13 @@ class OrchestratorEngine:
         reviewer_prompt = f"""# Independent reviewer\n\nGitHub Issue: {issue_repo}#{issue_number}\nYou did not implement this task. Review the Issue contract plus actual files/diff/tests.\n\n## Task\n{json.dumps(task, ensure_ascii=False, indent=2)}\n\n## Reviewer profile\n{json.dumps(reviewer, ensure_ascii=False, indent=2)}\n\n## Project context\n{reviewer_context}\n\n## Graphify context (advisory)\n{graph_context or '[not available]'}\n\n## Deterministic acceptance\n{json.dumps(first, ensure_ascii=False, indent=2)}\n\n## Actual diff\n{diff}\n\nInspect actual files/assets/tests directly. End output with exactly one line:\n@@ORCH_REVIEW@@ {{\"verdict\":\"PASS|FAIL\",\"score\":0,\"summary\":\"...\",\"findings\":[],\"acceptance\":[{{\"criterion\":\"exact acceptance string\",\"status\":\"PASS|FAIL\",\"evidence\":\"exact evidence\"}}],\"prohibited\":[{{\"rule\":\"exact prohibited string\",\"status\":\"PASS|FAIL\",\"evidence\":\"exact evidence\"}}],\"risks\":[]}}\nEvery acceptance/prohibited item must appear exactly and include evidence.\n"""
         self.state.update_lease(self.instance_id, status="INTERNAL_REVIEW", payload=payload, issue_number=issue_number)
         self.log_task(issue_number, "REVIEWER_START", f"Starting independent reviewer with model {reviewer.get('model')}")
-        reviewer_code, reviewer_output = self.run_agent(reviewer, reviewer_prompt, worktree, issue_number)
+        reviewer_code, reviewer_output = self.run_agent(
+            reviewer,
+            reviewer_prompt,
+            worktree,
+            issue_number,
+            continue_thread=(is_gemini_mode and payload.get("agy_thread_started", False)),
+        )
         self.log_task(issue_number, "REVIEWER_OUTPUT", f"Reviewer finished with exit code {reviewer_code}", output=reviewer_output)
         if reviewer_code:
             self._block(lease, "reviewer infrastructure failure", exit_code=reviewer_code, output=reviewer_output[-4000:])
@@ -1480,29 +1572,70 @@ class OrchestratorEngine:
                 task["base_branch"],
             )
         review_cycle = int(payload.get("review_cycle", 0)) + 1
-        comment_id = self.event(
-            issue_number,
-            "ready_for_gpt_review",
-            logical_issue_id=payload.get("logical_issue_id") or (task.get("issue_id") if task else None),
-            task=task,
-            pr_url=pr["html_url"],
-            pr_number=pr["number"],
-            pr_head_sha=head_sha,
-            review_cycle=review_cycle,
-            internal_review=review,
-            acceptance=final,
-            graphify=graph_status,
-        )
-        payload.update({
-            "pr_number": pr["number"],
-            "pr_head_sha": head_sha,
-            "review_cycle": review_cycle,
-            "command_after_comment_id": comment_id,
-            "rework_count": 0,
-        })
-        self.state.update_lease(self.instance_id, status="WAITING_GPT_REVIEW", payload=payload, issue_number=issue_number)
-        self.set_label(issue_number, LABEL_GPT_REVIEW)
-        self.log_task(issue_number, "READY_FOR_GPT_REVIEW", f"Task is ready for GPT review: PR #{pr['number']}, sha {head_sha}")
+        if is_gemini_mode:
+            comment_id = self.event(
+                issue_number,
+                "gemini_approved",
+                logical_issue_id=payload.get("logical_issue_id") or (task.get("issue_id") if task else None),
+                task=task,
+                pr_url=pr["html_url"],
+                pr_number=pr["number"],
+                pr_head_sha=head_sha,
+                review_cycle=review_cycle,
+                review=review,
+                gemini_model=self.get_gemini_reviewer_model(),
+                acceptance=final,
+                graphify=graph_status,
+            )
+            payload.update({
+                "pr_number": pr["number"],
+                "pr_head_sha": head_sha,
+                "review_cycle": review_cycle,
+                "command_after_comment_id": comment_id,
+                "rework_count": 0,
+            })
+            self.state.update_lease(self.instance_id, status="APPROVED_WAITING_MERGE", payload=payload, issue_number=issue_number)
+            self.set_label(issue_number, LABEL_APPROVED)
+            self.log_task(issue_number, "GEMINI_APPROVED", f"Task approved 100% on AGY thread by Gemini ({self.get_gemini_reviewer_model()}): PR #{pr['number']}, sha {head_sha}")
+            try:
+                merge_res = self.github.merge_pr(
+                    payload["target_repo"],
+                    pr["number"],
+                    commit_title=f"Merge pull request #{pr['number']} for issue #{issue_number} (Gemini auto-approved)",
+                )
+                if merge_res.get("merged"):
+                    self.event(issue_number, "complete", merged_pr=pr.get("html_url") or f"PR #{pr['number']}")
+                    self.set_label(issue_number, LABEL_DONE)
+                    self.github.close_issue(self._issue_repo(issue_number), issue_number)
+                    self.state.release(self.instance_id, issue_number=issue_number)
+                    self.log_task(issue_number, "DONE", f"Task completed and PR #{pr['number']} merged autonomously by Gemini reviewer.")
+            except Exception as exc:
+                logger.warning("Auto-merge PR #%s failed: %s", pr["number"], exc)
+            return
+        else:
+            comment_id = self.event(
+                issue_number,
+                "ready_for_gpt_review",
+                logical_issue_id=payload.get("logical_issue_id") or (task.get("issue_id") if task else None),
+                task=task,
+                pr_url=pr["html_url"],
+                pr_number=pr["number"],
+                pr_head_sha=head_sha,
+                review_cycle=review_cycle,
+                internal_review=review,
+                acceptance=final,
+                graphify=graph_status,
+            )
+            payload.update({
+                "pr_number": pr["number"],
+                "pr_head_sha": head_sha,
+                "review_cycle": review_cycle,
+                "command_after_comment_id": comment_id,
+                "rework_count": 0,
+            })
+            self.state.update_lease(self.instance_id, status="WAITING_GPT_REVIEW", payload=payload, issue_number=issue_number)
+            self.set_label(issue_number, LABEL_GPT_REVIEW)
+            self.log_task(issue_number, "READY_FOR_GPT_REVIEW", f"Task is ready for GPT review: PR #{pr['number']}, sha {head_sha}")
 
     def _schedule_rework(self, lease: dict, payload: dict, task: dict, event_type: str, **details: Any) -> None:
         issue_number = lease["issue_number"]
@@ -1638,7 +1771,18 @@ class OrchestratorEngine:
             return
 
         if status == "WAITING_GPT_REVIEW":
-            if LABEL_APPROVED in labels:
+            if self.get_final_reviewer() == "gemini":
+                self.event(
+                    issue_number,
+                    "gemini_approved",
+                    review_cycle=int(payload.get("review_cycle", 1)),
+                    pr_head_sha=payload.get("pr_head_sha"),
+                    gemini_model=self.get_gemini_reviewer_model(),
+                )
+                self.state.update_lease(self.instance_id, status="APPROVED_WAITING_MERGE", payload=payload, issue_number=issue_number)
+                self.set_label(issue_number, LABEL_APPROVED)
+                status = "APPROVED_WAITING_MERGE"
+            elif LABEL_APPROVED in labels:
                 self.event(issue_number, "gpt_approved", review_cycle=int(payload.get("review_cycle", 1)), pr_head_sha=payload.get("pr_head_sha"))
                 self.state.update_lease(self.instance_id, status="APPROVED_WAITING_MERGE", payload=payload, issue_number=issue_number)
                 self.set_label(issue_number, LABEL_APPROVED)
@@ -1920,7 +2064,7 @@ class OrchestratorEngine:
                 for r in ready_issues:
                     if r["number"] not in known_numbers:
                         open_issues.append(r)
-                if open_mocked:
+                if open_mocked or ready_mocked:
                     all_repo_issues = list(open_issues)
                 else:
                     try:
@@ -2066,7 +2210,7 @@ class OrchestratorEngine:
             num = int(lease["issue_number"])
             seen_numbers.add(num)
             p = dict(lease.get("payload") or {})
-            lc = self._lifecycle(lease["status"])
+            lc = self._lifecycle(lease["status"], final_reviewer=self.get_final_reviewer())
             issues.append({
                 "issue_repo": p.get("issue_repo") or p.get("target_repo", ""),
                 "project_ids": [p.get("project", "")],
@@ -2128,7 +2272,7 @@ class OrchestratorEngine:
                     stderr=subprocess.DEVNULL,
                 )
                 subject = subj_proc.stdout.strip() or f"Task issue #{num} ({slug})"
-                lc = self._lifecycle("RUNNING", ["orch:running"])
+                lc = self._lifecycle("RUNNING", ["orch:running"], final_reviewer=self.get_final_reviewer())
 
                 issues.append({
                     "issue_repo": project.get("issues_repo", project["repo"]),
@@ -2209,7 +2353,7 @@ class OrchestratorEngine:
                             active_payload = dict(active_lease.get("payload") or {})
                         elif str(row.get("state", "open")).lower() == "closed":
                             active_status = "DONE"
-                        lifecycle = self._lifecycle(active_status, labels)
+                        lifecycle = self._lifecycle(active_status, labels, final_reviewer=self.get_final_reviewer())
                         if active_status == "BLOCKED" or lifecycle.get("is_blocked"):
                             lifecycle["blocked_reason"] = active_payload.get("blocked_reason") or ""
                             lifecycle["blocked_output"] = active_payload.get("blocked_output") or self.get_task_log(int(row["number"]))
@@ -2234,7 +2378,7 @@ class OrchestratorEngine:
         active_tasks = []
         for l in active_leases:
             p = dict(l.get("payload") or {})
-            lc = self._lifecycle(l["status"])
+            lc = self._lifecycle(l["status"], final_reviewer=self.get_final_reviewer())
             task_log = self.get_task_log(l["issue_number"])
             if l["status"] == "BLOCKED" or lc.get("is_blocked"):
                 lc["blocked_reason"] = p.get("blocked_reason") or ""
@@ -2250,7 +2394,7 @@ class OrchestratorEngine:
                 "created_at": l.get("created_at"),
             })
         active = active_tasks[0] if active_tasks else None
-        active_lifecycle = active["lifecycle"] if active else self._lifecycle("READY")
+        active_lifecycle = active["lifecycle"] if active else self._lifecycle("READY", final_reviewer=self.get_final_reviewer())
 
         metrics = {
             "ready": sum(1 for x in queue if x.get("lifecycle", {}).get("status") == "READY"),
@@ -2270,6 +2414,11 @@ class OrchestratorEngine:
             "agy_config": {
                 "model": self.get_agy_model(),
                 "available_models": self.get_available_agy_models(),
+            },
+            "final_reviewer_config": {
+                "final_reviewer": self.get_final_reviewer(),
+                "gemini_reviewer_model": self.get_gemini_reviewer_model(),
+                "available_gemini_models": self.get_available_gemini_models(),
             },
             "telegram": self.telegram.get_config(masked=False),
             "self_update": self.self_update_status(),

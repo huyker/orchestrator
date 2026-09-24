@@ -198,6 +198,7 @@ Use nearest target first.
             parsed_id = engine._parse_canonical_id(issue_dict)
             self.assertEqual(parsed_id, "issue4")
             self.assertNotEqual(parsed_id, "issue8")
+            engine.close()
 
 
 if __name__ == "__main__":
