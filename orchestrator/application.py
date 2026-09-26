@@ -49,7 +49,7 @@ class AllInOneApplication:
                 self.engine.refresh_github_auth()
             except Exception as exc:
                 self.engine.state.add_event("github_auth_error", {"error": str(exc)})
-            self.stop.wait(10)
+            self.stop.wait(60)
 
     def _self_update_forever(self) -> None:
         if not self.self_update_enabled:

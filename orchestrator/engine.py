@@ -247,14 +247,18 @@ class OrchestratorEngine:
             {"id": "gemini-3.1-pro-high", "name": "Gemini 3.1 Pro (High)"},
         ]
 
-    # ---------- GitHub authentication ----------
     def refresh_github_auth(self) -> dict[str, Any]:
+        prev_connected = self._github_auth.get("connected") if isinstance(self._github_auth, dict) else None
+        prev_error = self._github_auth.get("error") if isinstance(self._github_auth, dict) else None
         self._github_auth = self.github.auth_status()
-        self.state.add_event("github_auth", {
-            "connected": self._github_auth.get("connected", False),
-            "login": self._github_auth.get("login"),
-            "error": self._github_auth.get("error"),
-        })
+        now_connected = self._github_auth.get("connected", False)
+        now_error = self._github_auth.get("error")
+        if prev_connected != now_connected or prev_error != now_error:
+            self.state.add_event("github_auth", {
+                "connected": now_connected,
+                "login": self._github_auth.get("login"),
+                "error": now_error,
+            })
         return dict(self._github_auth)
 
     def github_auth_status(self) -> dict[str, Any]:

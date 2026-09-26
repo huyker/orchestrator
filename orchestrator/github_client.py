@@ -14,6 +14,9 @@ class GitHubClient:
 
     def __init__(self, token: str = ""):
         self.token = str(token or "").strip()
+        self._auth_cache: dict[str, Any] | None = None
+        self._auth_cache_time: float = 0.0
+        self._auth_cache_ttl: float = 60.0
 
     def _get_token(self) -> str:
         import os
@@ -75,52 +78,78 @@ class GitHubClient:
 
         return ""
 
-    def auth_status(self) -> dict[str, Any]:
+    def auth_status(self, force: bool = False) -> dict[str, Any]:
+        import time
+        now = time.time()
+        if not force and self._auth_cache is not None and (now - self._auth_cache_time < self._auth_cache_ttl):
+            return dict(self._auth_cache)
+
+        res: dict[str, Any]
         if shutil.which("gh"):
             try:
                 user = self._request_gh("GET", "/user")
-                return {
+                res = {
                     "connected": True,
                     "login": user.get("login"),
                     "name": user.get("name"),
                     "error": None,
                     "provider": "gh-cli",
                 }
+                self._auth_cache = res
+                self._auth_cache_time = now
+                self._auth_cache_ttl = 60.0
+                return dict(res)
             except Exception as exc:
                 token = self._get_token()
                 if not token:
-                    return {
+                    res = {
                         "connected": False,
                         "login": None,
                         "error": f"GitHub CLI is not authenticated: {exc}",
                         "provider": "gh-cli",
                     }
+                    self._auth_cache = res
+                    self._auth_cache_time = now
+                    self._auth_cache_ttl = 30.0
+                    return dict(res)
         else:
             token = self._get_token()
 
         if token:
             try:
                 user = self._request_token("GET", "/user", token=token)
-                return {
+                res = {
                     "connected": True,
                     "login": user.get("login"),
                     "name": user.get("name"),
                     "error": None,
                     "provider": "token",
                 }
+                self._auth_cache = res
+                self._auth_cache_time = now
+                self._auth_cache_ttl = 60.0
+                return dict(res)
             except Exception as exc:
-                return {
+                res = {
                     "connected": False,
                     "login": None,
                     "error": f"GitHub Token authentication failed: {exc}",
                     "provider": "token",
                 }
-        return {
+                self._auth_cache = res
+                self._auth_cache_time = now
+                self._auth_cache_ttl = 60.0
+                return dict(res)
+        res = {
             "connected": False,
             "login": None,
             "error": "GitHub CLI is not authenticated and no GITHUB_TOKEN provided",
             "provider": "gh-cli",
         }
+        self._auth_cache = res
+        self._auth_cache_time = now
+        self._auth_cache_ttl = 30.0
+        return dict(res)
 
     def _request_gh(self, method: str, path: str, data: Any | None = None) -> Any:
         endpoint = path.lstrip("/")
